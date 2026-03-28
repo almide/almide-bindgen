@@ -1,0 +1,386 @@
+// csharp.almd — Generate C# binding using almide-bridge byte buffer protocol
+//
+// Usage: almide run csharp.almd -- interface.json
+//
+// Produces a .cs file using P/Invoke for FFI and manual big-endian serialization.
+
+import json
+import fs
+import env
+
+// ── JSON helpers ──
+
+fn get_str(v: Value, key: String) -> String =
+  json.as_string(json.get(v, key) ?? json.from_string("")) ?? ""
+
+fn get_arr(v: Value, key: String) -> List[Value] =
+  json.as_array(json.get(v, key) ?? json.array([])) ?? []
+
+fn get_kind(v: Value) -> String = get_str(v, "kind")
+fn get_type(v: Value) -> Value = json.get(v, "type") ?? json.null()
+
+// ── C# type mapping ──
+
+fn cs_type(ty: Value) -> String = {
+  let kind = get_kind(ty)
+  if kind == "float" then "double"
+  else if kind == "int" then "long"
+  else if kind == "string" then "string"
+  else if kind == "bool" then "bool"
+  else if kind == "named" then get_str(ty, "name")
+  else if kind == "option" then "${cs_type(json.get(ty, "inner") ?? json.null())}?"
+  else if kind == "list" then "List<${cs_type(json.get(ty, "inner") ?? json.null())}>"
+  else "object"
+}
+
+// ── Type classification ──
+
+fn find_type_def(name: String, types: List[Value]) -> Value = {
+  var result = json.null()
+  for t in types {
+    if get_str(t, "name") == name then result = t else result = result
+  }
+  result
+}
+
+fn is_record(name: String, types: List[Value]) -> Bool = {
+  let t = find_type_def(name, types)
+  get_kind(json.get(t, "kind") ?? json.null()) == "record"
+}
+
+fn is_variant(name: String, types: List[Value]) -> Bool = {
+  let t = find_type_def(name, types)
+  get_kind(json.get(t, "kind") ?? json.null()) == "variant"
+}
+
+// ── Big-endian helper method names ──
+
+fn be_write_method(ty: Value) -> String = {
+  let kind = get_kind(ty)
+  if kind == "int" then "WriteInt64BE"
+  else if kind == "float" then "WriteFloat64BE"
+  else if kind == "bool" then "WriteBoolBE"
+  else if kind == "string" then "WriteStringBE"
+  else ""
+}
+
+// ── Pack code generation ──
+
+fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let kind = get_kind(ty)
+  if kind == "int" then ["${indent}WriteInt64BE(ms, ${expr});"]
+  else if kind == "float" then ["${indent}WriteFloat64BE(ms, ${expr});"]
+  else if kind == "bool" then ["${indent}ms.WriteByte(${expr} ? (byte)1 : (byte)0);"]
+  else if kind == "string" then {
+    var lines: List[String] = []
+    lines = lines + ["${indent}{"]
+    lines = lines + ["${indent}    var _sb = System.Text.Encoding.UTF8.GetBytes(${expr});"]
+    lines = lines + ["${indent}    WriteUInt32BE(ms, (uint)_sb.Length);"]
+    lines = lines + ["${indent}    ms.Write(_sb, 0, _sb.Length);"]
+    lines = lines + ["${indent}}"]
+    lines
+  }
+  else if kind == "named" then {
+    let name = get_str(ty, "name")
+    if is_record(name, types) then {
+      let tdef = find_type_def(name, types)
+      let fields = get_arr(json.get(tdef, "kind") ?? json.null(), "fields")
+      var lines: List[String] = []
+      for f in fields {
+        let fname = get_str(f, "name")
+        let ftype = get_type(f)
+        let cap_name = string.to_upper(string.slice(fname, 0, 1)) + string.slice(fname, 1, string.len(fname))
+        lines = lines + gen_pack_expr("${expr}.${cap_name}", ftype, types, indent)
+      }
+      lines
+    } else if is_variant(name, types) then {
+      let tdef = find_type_def(name, types)
+      let cases = get_arr(json.get(tdef, "kind") ?? json.null(), "cases")
+      var lines: List[String] = []
+      var tag_idx = 0
+      for case in cases {
+        let cname = get_str(case, "name")
+        let cond = if tag_idx == 0 then "if" else "else if"
+        lines = lines + ["${indent}${cond} (${expr} is ${cname} _vc${int.to_string(tag_idx)})"]
+        lines = lines + ["${indent}{"]
+        lines = lines + ["${indent}    WriteUInt32BE(ms, ${int.to_string(tag_idx)});"]
+        let payload = json.get(case, "payload")
+        match payload {
+          some(pl) => {
+            if get_kind(pl) == "tuple" then {
+              let pfields = get_arr(pl, "fields")
+              var pi = 0
+              for pf in pfields {
+                lines = lines + gen_pack_expr("_vc${int.to_string(tag_idx)}.V${int.to_string(pi)}", pf, types, indent + "    ")
+                pi = pi + 1
+              }
+            } else lines = lines
+          },
+          none => { },
+        }
+        lines = lines + ["${indent}}"]
+        tag_idx = tag_idx + 1
+      }
+      lines
+    } else ["${indent}// unknown named type: ${name}"]
+  }
+  else ["${indent}// unknown pack type: ${kind}"]
+}
+
+// ── Unpack code generation ──
+
+fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let kind = get_kind(ty)
+  if kind == "int" then ["${indent}var _v = ReadInt64BE(buf, ref pos);"]
+  else if kind == "float" then ["${indent}var _v = ReadFloat64BE(buf, ref pos);"]
+  else if kind == "bool" then ["${indent}var _v = buf[pos++] != 0;"]
+  else if kind == "string" then {
+    var lines: List[String] = []
+    lines = lines + ["${indent}var _slen = (int)ReadUInt32BE(buf, ref pos);"]
+    lines = lines + ["${indent}var _v = System.Text.Encoding.UTF8.GetString(buf, pos, _slen); pos += _slen;"]
+    lines
+  }
+  else if kind == "named" then {
+    let name = get_str(ty, "name")
+    if is_record(name, types) then {
+      let tdef = find_type_def(name, types)
+      let fields = get_arr(json.get(tdef, "kind") ?? json.null(), "fields")
+      var lines: List[String] = []
+      for f in fields {
+        let fname = get_str(f, "name")
+        let ftype = get_type(f)
+        let cap_name = string.to_upper(string.slice(fname, 0, 1)) + string.slice(fname, 1, string.len(fname))
+        let unpack = gen_unpack_expr(ftype, types, indent)
+        lines = lines + unpack.map((l) => string.replace(l, "_v", "_f_${fname}"))
+      }
+      let ctor_args = fields.map((f2) => "${get_str(f2, "name")}: _f_${get_str(f2, "name")}").join(", ")
+      lines = lines + ["${indent}var _v = new ${name}(${ctor_args});"]
+      lines
+    } else ["${indent}${cs_type(ty)} _v = null; // unknown named type"]
+  }
+  else ["${indent}object _v = null; // unknown unpack type"]
+}
+
+// ── Generate record class ──
+
+fn gen_record_class(name: String, fields: List[Value], type_def: Value) -> List[String] = {
+  var lines: List[String] = []
+  let doc = get_str(type_def, "doc")
+  if doc != "" then {
+    lines = lines + ["    /// <summary>${doc}</summary>"]
+  } else lines = lines
+
+  let ctor_params = fields.map((f) => "${cs_type(get_type(f))} ${get_str(f, "name")}").join(", ")
+  lines = lines + ["    public record ${name}(${ctor_params})"]
+  lines = lines + ["    {"]
+  for f in fields {
+    let fname = get_str(f, "name")
+    let ftype = get_type(f)
+    let cap_name = string.to_upper(string.slice(fname, 0, 1)) + string.slice(fname, 1, string.len(fname))
+    lines = lines + ["        public ${cs_type(ftype)} ${cap_name} => ${fname};"]
+  }
+  lines = lines + ["    }"]
+  lines = lines + [""]
+  lines
+}
+
+// ── Generate variant class ──
+
+fn gen_variant_class(name: String, cases: List[Value], type_def: Value) -> List[String] = {
+  var lines: List[String] = []
+  let doc = get_str(type_def, "doc")
+  if doc != "" then {
+    lines = lines + ["    /// <summary>${doc}</summary>"]
+  } else lines = lines
+
+  lines = lines + ["    public abstract record ${name};"]
+  lines = lines + [""]
+
+  for case in cases {
+    let cname = get_str(case, "name")
+    let payload = json.get(case, "payload")
+    match payload {
+      some(pl) => {
+        if get_kind(pl) == "tuple" then {
+          let pfields = get_arr(pl, "fields")
+          var params: List[String] = []
+          var pi = 0
+          for pf in pfields {
+            params = params + ["${cs_type(pf)} V${int.to_string(pi)}"]
+            pi = pi + 1
+          }
+          lines = lines + ["    public record ${cname}(${params.join(", ")}) : ${name};"]
+        } else {
+          lines = lines + ["    public record ${cname}() : ${name};"]
+        }
+      },
+      none => {
+        lines = lines + ["    public record ${cname}() : ${name};"]
+      },
+    }
+  }
+  lines = lines + [""]
+  lines
+}
+
+// ── Generate function wrapper ──
+
+fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
+  let fname = get_str(f, "name")
+  let params = get_arr(f, "params")
+  let ret = json.get(f, "return") ?? json.null()
+  let doc = get_str(f, "doc")
+
+  let cap_fname = string.to_upper(string.slice(fname, 0, 1)) + string.slice(fname, 1, string.len(fname))
+
+  let cs_params = params.map((p) => "${cs_type(json.get(p, "type") ?? json.null())} ${get_str(p, "name")}").join(", ")
+
+  var lines: List[String] = []
+  if doc != "" then lines = lines + ["        /// <summary>${doc}</summary>"] else lines = lines
+  lines = lines + ["        public static ${cs_type(ret)} ${cap_fname}(${cs_params})"]
+  lines = lines + ["        {"]
+  lines = lines + ["            using var ms = new System.IO.MemoryStream();"]
+
+  // Pack args
+  for p in params {
+    let pname = get_str(p, "name")
+    let ptype = json.get(p, "type") ?? json.null()
+    let pack = gen_pack_expr(pname, ptype, types, "            ")
+    for pl in pack {
+      lines = lines + [pl]
+    }
+  }
+
+  // Call bridge
+  lines = lines + ["            var args = ms.ToArray();"]
+  lines = lines + ["            var outBuf = new byte[4096];"]
+  lines = lines + ["            int rlen;"]
+  lines = lines + ["            unsafe"]
+  lines = lines + ["            {"]
+  lines = lines + ["                fixed (byte* ap = args, op = outBuf)"]
+  lines = lines + ["                {"]
+  lines = lines + ["                    rlen = bridge_${fname}((IntPtr)ap, args.Length, (IntPtr)op, 4096);"]
+  lines = lines + ["                }"]
+  lines = lines + ["            }"]
+  lines = lines + ["            var buf = outBuf;"]
+  lines = lines + ["            var pos = 0;"]
+
+  // Unpack result
+  let unpack = gen_unpack_expr(ret, types, "            ")
+  for ul in unpack {
+    lines = lines + [ul]
+  }
+  lines = lines + ["            return _v;"]
+  lines = lines + ["        }"]
+  lines = lines + [""]
+  lines
+}
+
+// ── Main ──
+
+effect fn main() -> Unit = {
+  let args = env.args()
+  let iface_path = list.get(args, 0) ?? "interface.json"
+
+  let iface_text = fs.read_text(iface_path)!
+  let iface = json.parse(iface_text)!
+
+  let module_name = get_str(iface, "module")
+  let types = get_arr(iface, "types")
+  let functions = get_arr(iface, "functions")
+
+  let cap_module = string.to_upper(string.slice(module_name, 0, 1)) + string.slice(module_name, 1, string.len(module_name))
+
+  var lines: List[String] = []
+  lines = lines + ["// Auto-generated by almide-bridge"]
+  lines = lines + ["using System;"]
+  lines = lines + ["using System.Runtime.InteropServices;"]
+  lines = lines + [""]
+  lines = lines + ["namespace Almide.${cap_module}"]
+  lines = lines + ["{"]
+
+  // Record + Variant types
+  for t in types {
+    let name = get_str(t, "name")
+    let kind = json.get(t, "kind") ?? json.null()
+    if get_kind(kind) == "record" then {
+      lines = lines + gen_record_class(name, get_arr(kind, "fields"), t)
+    } else if get_kind(kind) == "variant" then {
+      lines = lines + gen_variant_class(name, get_arr(kind, "cases"), t)
+    } else lines = lines
+  }
+
+  // Bridge class with P/Invoke and methods
+  lines = lines + ["    public static unsafe class Bridge"]
+  lines = lines + ["    {"]
+  lines = lines + ["        private const string LibName = \"almide_${module_name}\";"]
+  lines = lines + [""]
+
+  // DllImport declarations
+  for f in functions {
+    let fname = get_str(f, "name")
+    lines = lines + ["        [DllImport(LibName, EntryPoint = \"bridge_${fname}\")]"]
+    lines = lines + ["        private static extern int bridge_${fname}(IntPtr args, int argsLen, IntPtr outBuf, int outCap);"]
+    lines = lines + [""]
+  }
+
+  // Big-endian helper methods
+  lines = lines + ["        // ── Big-endian helpers ──"]
+  lines = lines + [""]
+  lines = lines + ["        private static void WriteInt64BE(System.IO.MemoryStream ms, long v)"]
+  lines = lines + ["        {"]
+  lines = lines + ["            var b = BitConverter.GetBytes(v);"]
+  lines = lines + ["            if (BitConverter.IsLittleEndian) Array.Reverse(b);"]
+  lines = lines + ["            ms.Write(b, 0, 8);"]
+  lines = lines + ["        }"]
+  lines = lines + [""]
+  lines = lines + ["        private static void WriteFloat64BE(System.IO.MemoryStream ms, double v)"]
+  lines = lines + ["        {"]
+  lines = lines + ["            var b = BitConverter.GetBytes(v);"]
+  lines = lines + ["            if (BitConverter.IsLittleEndian) Array.Reverse(b);"]
+  lines = lines + ["            ms.Write(b, 0, 8);"]
+  lines = lines + ["        }"]
+  lines = lines + [""]
+  lines = lines + ["        private static void WriteUInt32BE(System.IO.MemoryStream ms, uint v)"]
+  lines = lines + ["        {"]
+  lines = lines + ["            var b = BitConverter.GetBytes(v);"]
+  lines = lines + ["            if (BitConverter.IsLittleEndian) Array.Reverse(b);"]
+  lines = lines + ["            ms.Write(b, 0, 4);"]
+  lines = lines + ["        }"]
+  lines = lines + [""]
+  lines = lines + ["        private static long ReadInt64BE(byte[] buf, ref int pos)"]
+  lines = lines + ["        {"]
+  lines = lines + ["            var b = new byte[8];"]
+  lines = lines + ["            Array.Copy(buf, pos, b, 0, 8); pos += 8;"]
+  lines = lines + ["            if (BitConverter.IsLittleEndian) Array.Reverse(b);"]
+  lines = lines + ["            return BitConverter.ToInt64(b, 0);"]
+  lines = lines + ["        }"]
+  lines = lines + [""]
+  lines = lines + ["        private static double ReadFloat64BE(byte[] buf, ref int pos)"]
+  lines = lines + ["        {"]
+  lines = lines + ["            var b = new byte[8];"]
+  lines = lines + ["            Array.Copy(buf, pos, b, 0, 8); pos += 8;"]
+  lines = lines + ["            if (BitConverter.IsLittleEndian) Array.Reverse(b);"]
+  lines = lines + ["            return BitConverter.ToDouble(b, 0);"]
+  lines = lines + ["        }"]
+  lines = lines + [""]
+  lines = lines + ["        private static uint ReadUInt32BE(byte[] buf, ref int pos)"]
+  lines = lines + ["        {"]
+  lines = lines + ["            var b = new byte[4];"]
+  lines = lines + ["            Array.Copy(buf, pos, b, 0, 4); pos += 4;"]
+  lines = lines + ["            if (BitConverter.IsLittleEndian) Array.Reverse(b);"]
+  lines = lines + ["            return BitConverter.ToUInt32(b, 0);"]
+  lines = lines + ["        }"]
+  lines = lines + [""]
+
+  // Functions
+  for f in functions {
+    lines = lines + gen_function(f, module_name, types)
+  }
+
+  lines = lines + ["    }"]
+  lines = lines + ["}"]
+
+  fs.write("almide_${module_name}.cs", lines.join("\n"))!
+  println("Generated: almide_${module_name}.cs (almide-bridge, C# P/Invoke)")
+}
