@@ -1,0 +1,56 @@
+// bindgen — Universal FFI binding generator for Almide
+//
+// Library API: import bindgen
+//   bindgen.scaffolding(iface_json, rust_source) -> String
+//   bindgen.python(iface_json) -> String
+//   bindgen.go(iface_json) -> String
+//   ... etc for all 14 languages
+
+import json
+
+// ── Shared JSON helpers (used by all generators) ──
+
+fn get_str(v: Value, key: String) -> String =
+  json.as_string(json.get(v, key) ?? json.from_string("")) ?? ""
+
+fn get_arr(v: Value, key: String) -> List[Value] =
+  json.as_array(json.get(v, key) ?? json.array([])) ?? []
+
+fn get_kind(v: Value) -> String = get_str(v, "kind")
+
+fn get_type(v: Value) -> Value = json.get(v, "type") ?? json.null()
+
+fn find_type_def(name: String, types: List[Value]) -> Value = {
+  var result = json.null()
+  for t in types {
+    if get_str(t, "name") == name then result = t else result = result
+  }
+  result
+}
+
+fn is_record(name: String, types: List[Value]) -> Bool = {
+  let t = find_type_def(name, types)
+  get_kind(json.get(t, "kind") ?? json.null()) == "record"
+}
+
+fn is_variant(name: String, types: List[Value]) -> Bool = {
+  let t = find_type_def(name, types)
+  get_kind(json.get(t, "kind") ?? json.null()) == "variant"
+}
+
+// ── Public API ──
+// Each function takes interface JSON string and returns generated source code.
+
+// Placeholder: the actual generation logic is in sub-modules.
+// When Almide supports import self.sub, these will delegate to:
+//   self.scaffolding.generate(iface)
+//   self.bindings.python.generate(iface)
+// For now, the generation logic remains in the individual .almd files
+// and lander calls them via process.exec("almide", ["run", ...]).
+
+fn version() -> String = "0.1.0"
+
+fn supported_languages() -> List[String] = [
+  "python", "go", "ruby", "swift", "csharp", "dart",
+  "kotlin", "java", "c", "zig", "nim", "elixir", "php", "lua"
+]
