@@ -14,446 +14,282 @@ local fn is_record(name: String, types: List[Value]) -> Bool = bindgen.is_record
 local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Swift type mapping ──
-fn swift_type(ty: Value) -> String = {
-  let kind = get_kind(ty);
-  if kind == "float" then "Double"
-  else if kind == "int" then "Int64"
-  else if kind == "string" then "String"
-  else if kind == "bool" then "Bool"
-  else if kind == "named" then get_str(ty, "name")
-  else if kind == "option" then "${swift_type(json.get(ty, "inner") ?? json.null())}?"
-  else if kind == "list" then "[${swift_type(json.get(ty, "inner") ?? json.null())}]"
-  else "Any"
-}
+
+local fn swift_type(ty: Value) -> String =
+  match get_kind(ty) {
+    "float"  => "Double",
+    "int"    => "Int64",
+    "string" => "String",
+    "bool"   => "Bool",
+    "named"  => get_str(ty, "name"),
+    "option" => "${swift_type(json.get(ty, "inner") ?? json.null())}?",
+    "list"   => "[${swift_type(json.get(ty, "inner") ?? json.null())}]",
+    _        => "Any",
+  }
 
 // ── Pack code generation ──
-fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let kind = get_kind(ty);
-  if kind == "int" then [
-    "${indent}writeInt64(&buf, ${expr})"
-  ]
-  else if kind == "float" then [
-    "${indent}writeFloat64(&buf, ${expr})"
-  ]
-  else if kind == "bool" then [
-    "${indent}buf.append(${expr} ? 1 : 0)"
-  ]
-  else if kind == "string" then {
-    var lines: List[String] = [];
-    lines = lines + [
-      "${indent}writeString(&buf, ${expr})"
-    ];
-    lines = lines + [
-      "${indent}}"
-    ];
-    lines
-  } else if kind == "named" then {
-    let name = get_str(ty, "name");
-    if is_record(name, types) then {
-      let tdef = find_type_def(name, types);
-      let fields = get_arr(json.get(tdef, "kind") ?? json.null(), "fields");
-      var lines: List[String] = [];
-      for f in fields {
-        let fname = get_str(f, "name");
-        let ftype = get_type(f);
-        lines = lines + gen_pack_expr("${expr}.${fname}", ftype, types, indent);
-      };
-      lines
-    } else if is_variant(name, types) then {
-      let tdef = find_type_def(name, types);
-      let cases = get_arr(json.get(tdef, "kind") ?? json.null(), "cases");
-      var lines: List[String] = [];
-      lines = lines + [
-        "${indent}switch ${expr} {"
-      ];
-      var tag_idx = 0;
-      for case in cases {
-        let cname = get_str(case, "name");
-        let payload = json.get(case, "payload");
-        match payload {
-          some(pl) => {
-            if get_kind(pl) == "tuple" then {
-              let pfields = get_arr(pl, "fields");
-              var bind_names: List[String] = [];
-              var bi = 0;
-              for _ in pfields {
-                bind_names = bind_names + [
-                  "_p${int.to_string(bi)}"
-                ];
-                bi = bi + 1;
-              };
-              let binds = bind_names.map((b) => "let ${b}").join(", ");
-              lines = lines + [
-                "${indent}case .${cname.to_lower()}(${binds}):"
-              ];
-              lines = lines + [
-                "${indent}    writeUInt32(&buf, ${int.to_string(tag_idx)})"
-              ];
-              var pi = 0;
-              for pf in pfields {
-                lines = lines + gen_pack_expr("_p${int.to_string(pi)}", pf, types, indent + "    ");
-                pi = pi + 1;
-              }
-            } else {
-              lines = lines + [
-                "${indent}case .${cname.to_lower()}:"
-              ];
-              lines = lines + [
-                "${indent}    writeUInt32(&buf, ${int.to_string(tag_idx)})"
-              ];
-            }
-          },
-          none => {
-            lines = lines + [
-              "${indent}case .${cname.to_lower()}:"
-            ];
-            lines = lines + [
-              "${indent}    do {"
-            ];
-            lines = lines + [
-              "${indent}        var _tag = UInt32(${int.to_string(tag_idx)}).bigEndian"
-            ];
-            lines = lines + [
-              "${indent}        buf.append(Data(bytes: &_tag, count: 4))"
-            ];
-            lines = lines + [
-              "${indent}    }"
-            ];
-          },
-        };
-        tag_idx = tag_idx + 1;
-      };
-      lines = lines + [
-        "${indent}}"
-      ];
-      lines
-    } else [
-      "${indent}// unknown named type: ${name}"
-    ]
-  } else [
-    "${indent}// unknown pack type: ${kind}"
-  ]
+
+local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] =
+  match get_kind(ty) {
+    "int"    => ["${indent}writeInt64(&buf, ${expr})"],
+    "float"  => ["${indent}writeFloat64(&buf, ${expr})"],
+    "bool"   => ["${indent}buf.append(${expr} ? 1 : 0)"],
+    "string" => [
+      "${indent}writeString(&buf, ${expr})",
+      "${indent}}",
+    ],
+    "named" => gen_pack_named(expr, ty, types, indent),
+    _ => ["${indent}// unknown pack type: ${get_kind(ty)}"],
+  }
+
+local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name")
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
+    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types, indent))
+  }
+  else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
+  else ["${indent}// unknown named type: ${name}"]
+}
+
+local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
+  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
+  ["${indent}switch ${expr} {"]
+  + (cases
+    |> list.enumerate
+    |> list.flat_map((entry) => {
+      let (idx, case) = entry
+      let cname = get_str(case, "name")
+      match json.get(case, "payload") {
+        some(pl) => if get_kind(pl) == "tuple" then {
+          let pfields = get_arr(pl, "fields")
+          let bind_names = pfields
+            |> list.enumerate
+            |> list.map((pe) => {
+              let (bi, _) = pe
+              "_p${int.to_string(bi)}"
+            })
+          let binds = bind_names |> list.map((b) => "let ${b}") |> list.join(", ")
+          let payload_lines = pfields
+            |> list.enumerate
+            |> list.flat_map((pe) => {
+              let (pi, pf) = pe
+              gen_pack_expr("_p${int.to_string(pi)}", pf, types, indent + "    ")
+            })
+          ["${indent}case .${cname |> string.to_lower}(${binds}):",
+           "${indent}    writeUInt32(&buf, ${int.to_string(idx)})"]
+          + payload_lines
+        } else [
+          "${indent}case .${cname |> string.to_lower}:",
+          "${indent}    writeUInt32(&buf, ${int.to_string(idx)})",
+        ],
+        none => [
+          "${indent}case .${cname |> string.to_lower}:",
+          "${indent}    do {",
+          "${indent}        var _tag = UInt32(${int.to_string(idx)}).bigEndian",
+          "${indent}        buf.append(Data(bytes: &_tag, count: 4))",
+          "${indent}    }",
+        ],
+      }
+    }))
+  + ["${indent}}"]
 }
 
 // ── Unpack code generation ──
-fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let kind = get_kind(ty);
-  if kind == "int" then [
-    "${indent}let _v = readInt64(_rbuf, &_pos)"
-  ]
-  else if kind == "float" then [
-    "${indent}let _v = readFloat64(_rbuf, &_pos)"
-  ]
-  else if kind == "bool" then [
-    "${indent}let _v = _rbuf[_pos] != 0; _pos += 1"
-  ]
-  else if kind == "string" then [
-    "${indent}let _v = readString(_rbuf, &_pos)"
-  ]
-  else if kind == "named" then {
-    let name = get_str(ty, "name");
-    if is_record(name, types) then {
-      let tdef = find_type_def(name, types);
-      let fields = get_arr(json.get(tdef, "kind") ?? json.null(), "fields");
-      var lines: List[String] = [];
-      for f in fields {
-        let fname = get_str(f, "name");
-        let ftype = get_type(f);
-        let unpack = gen_unpack_expr(ftype, types, indent);
-        lines = lines + unpack.map((l) => string.replace(l, "_v", "_f_${fname}"));
-      };
-      let ctor_args = fields.map((f2) => "${get_str(f2, "name")}: _f_${get_str(f2, "name")}").join(", ");
-      lines = lines + [
-        "${indent}let _v = ${name}(${ctor_args})"
-      ];
-      lines
-    } else [
-      "${indent}// unknown named type: ${name}"
-    ]
-  } else [
-    "${indent}// unknown unpack type: ${kind}"
-  ]
+
+local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] =
+  match get_kind(ty) {
+    "int"    => ["${indent}let _v = readInt64(_rbuf, &_pos)"],
+    "float"  => ["${indent}let _v = readFloat64(_rbuf, &_pos)"],
+    "bool"   => ["${indent}let _v = _rbuf[_pos] != 0; _pos += 1"],
+    "string" => ["${indent}let _v = readString(_rbuf, &_pos)"],
+    "named" => gen_unpack_named(ty, types, indent),
+    _ => ["${indent}// unknown unpack type: ${get_kind(ty)}"],
+  }
+
+local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name")
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
+    let unpack_lines = fields |> list.flat_map((f) => {
+      let fname = get_str(f, "name")
+      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
+    })
+    let ctor_args = fields |> list.map((f2) => "${get_str(f2, "name")}: _f_${get_str(f2, "name")}") |> list.join(", ")
+    unpack_lines + ["${indent}let _v = ${name}(${ctor_args})"]
+  } else ["${indent}// unknown named type: ${name}"]
 }
 
 // ── Generate record struct ──
-fn gen_record_struct(name: String, fields: List[Value], type_def: Value) -> List[String] = {
-  var lines: List[String] = [];
-  let doc = get_str(type_def, "doc");
-  if doc != "" then {
-    lines = lines + [
-      "/// ${doc}"
-    ];
-  } else {
-    lines = lines;
-  };
-  lines = lines + [
-    "public struct ${name}: Equatable, CustomStringConvertible {"
-  ];
-  for f in fields {
-    let fname = get_str(f, "name");
-    let ftype = get_type(f);
-    lines = lines + [
-      "    public let ${fname}: ${swift_type(ftype)}"
-    ];
-  };
-  lines = lines + [""];
-  let desc_parts = fields.map((f) => "${get_str(f, "name")}: \\(${get_str(f, "name")})").join(", ");
-  lines = lines + ["    public var description: String {"];
-  lines = lines + [
-    "        \"${name}(${desc_parts})\""
-  ];
-  lines = lines + ["    }"];
-  lines = lines + ["}"];
-  lines = lines + [""];
-  lines
+
+local fn gen_record_struct(name: String, fields: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc")
+  let doc_line = if doc != "" then ["/// ${doc}"] else []
+  let field_lines = fields |> list.map((f) =>
+    "    public let ${get_str(f, "name")}: ${swift_type(get_type(f))}"
+  )
+  let desc_parts = fields |> list.map((f) => "${get_str(f, "name")}: \\(${get_str(f, "name")})") |> list.join(", ")
+
+  doc_line
+  + ["public struct ${name}: Equatable, CustomStringConvertible {"]
+  + field_lines
+  + ["",
+     "    public var description: String {",
+     "        \"${name}(${desc_parts})\"",
+     "    }",
+     "}",
+     ""]
 }
 
 // ── Generate variant enum ──
-fn gen_variant_enum(name: String, cases: List[Value], type_def: Value) -> List[String] = {
-  var lines: List[String] = [];
-  let doc = get_str(type_def, "doc");
-  if doc != "" then {
-    lines = lines + [
-      "/// ${doc}"
-    ];
-  } else {
-    lines = lines;
-  };
-  lines = lines + [
-    "public enum ${name}: Equatable, CustomStringConvertible {"
-  ];
-  for case in cases {
-    let cname = get_str(case, "name");
-    let payload = json.get(case, "payload");
-    match payload {
-      some(pl) => {
-        if get_kind(pl) == "tuple" then {
-          let pfields = get_arr(pl, "fields");
-          let ptypes = pfields.map((pf) => swift_type(pf)).join(", ");
-          lines = lines + [
-            "    case ${cname.to_lower()}(${ptypes})"
-          ];
-        } else {
-          lines = lines + [
-            "    case ${cname.to_lower()}"
-          ];
-        }
-      },
-      none => {
-        lines = lines + [
-          "    case ${cname.to_lower()}"
-        ];
-      },
-    };
-  };
-  // description
-  lines = lines + [""];
-  lines = lines + ["    public var description: String {"];
-  lines = lines + ["        switch self {"];
-  for case in cases {
-    let cname = get_str(case, "name");
-    let payload = json.get(case, "payload");
-    match payload {
-      some(pl) => {
-        if get_kind(pl) == "tuple" then {
-          let pfields = get_arr(pl, "fields");
-          var bind_names: List[String] = [];
-          var bi = 0;
-          for _ in pfields {
-            bind_names = bind_names + [
-              "v${int.to_string(bi)}"
-            ];
-            bi = bi + 1;
-          };
-          let binds = bind_names.map((b) => "let ${b}").join(", ");
-          let descs = bind_names.map((b) => "\\(${b})").join(", ");
-          lines = lines + [
-            "        case .${cname.to_lower()}(${binds}): return \"${cname}(${descs})\""
-          ];
-        } else {
-          lines = lines + [
-            "        case .${cname.to_lower()}: return \"${cname}\""
-          ];
-        }
-      },
-      none => {
-        lines = lines + [
-          "        case .${cname.to_lower()}: return \"${cname}\""
-        ];
-      },
-    };
-  };
-  lines = lines + ["        }"];
-  lines = lines + ["    }"];
-  lines = lines + ["}"];
-  lines = lines + [""];
-  lines
+
+local fn gen_variant_enum(name: String, cases: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc")
+  let doc_line = if doc != "" then ["/// ${doc}"] else []
+  let case_lines = cases |> list.flat_map((case) => {
+    let cname = get_str(case, "name")
+    match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then {
+        let ptypes = get_arr(pl, "fields") |> list.map((pf) => swift_type(pf)) |> list.join(", ")
+        ["    case ${cname |> string.to_lower}(${ptypes})"]
+      } else ["    case ${cname |> string.to_lower}"],
+      none => ["    case ${cname |> string.to_lower}"],
+    }
+  })
+  let desc_cases = cases |> list.flat_map((case) => {
+    let cname = get_str(case, "name")
+    match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then {
+        let pfields = get_arr(pl, "fields")
+        let bind_names = pfields
+          |> list.enumerate
+          |> list.map((pe) => {
+            let (bi, _) = pe
+            "v${int.to_string(bi)}"
+          })
+        let binds = bind_names |> list.map((b) => "let ${b}") |> list.join(", ")
+        let descs = bind_names |> list.map((b) => "\\(${b})") |> list.join(", ")
+        ["        case .${cname |> string.to_lower}(${binds}): return \"${cname}(${descs})\""]
+      } else ["        case .${cname |> string.to_lower}: return \"${cname}\""],
+      none => ["        case .${cname |> string.to_lower}: return \"${cname}\""],
+    }
+  })
+
+  doc_line
+  + ["public enum ${name}: Equatable, CustomStringConvertible {"]
+  + case_lines
+  + ["",
+     "    public var description: String {",
+     "        switch self {"]
+  + desc_cases
+  + ["        }",
+     "    }",
+     "}",
+     ""]
 }
 
 // ── Generate function wrapper ──
-fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
-  let fname = get_str(f, "name");
-  let params = get_arr(f, "params");
-  let ret = json.get(f, "return") ?? json.null();
-  let doc = get_str(f, "doc");
-  let swift_params = params.map((p) => "_ ${get_str(p, "name")}: ${swift_type(json.get(p, "type") ?? json.null())}").join(", ");
-  var lines: List[String] = [];
-  if doc != "" then {
-    lines = lines + [
-      "    /// ${doc}"
-    ];
-  } else {
-    lines = lines;
-  };
-  lines = lines + [
-    "    public static func ${fname}(${swift_params}) -> ${swift_type(ret)} {"
-  ];
-  lines = lines + ["        var buf = Data()"];
-  // Pack args
-  for p in params {
-    let pname = get_str(p, "name");
-    let ptype = json.get(p, "type") ?? json.null();
-    let pack = gen_pack_expr(pname, ptype, types, "        ");
-    for pl in pack {
-      lines = lines + [pl];
-    };
-  };
-  // Call bridge
-  lines = lines + ["        var _out = Data(count: 4096)"];
-  lines = lines + [
-    "        let _rlen = buf.withUnsafeBytes { argPtr -> Int32 in"
-  ];
-  lines = lines + [
-    "            _out.withUnsafeMutableBytes { outPtr -> Int32 in"
-  ];
-  lines = lines + [
-    "                bridge_${fname}("
-  ];
-  lines = lines + [
-    "                    UnsafeMutablePointer(mutating: argPtr.baseAddress!.assumingMemoryBound(to: UInt8.self)),"
-  ];
-  lines = lines + ["                    Int32(buf.count),"];
-  lines = lines + [
-    "                    outPtr.baseAddress!.assumingMemoryBound(to: UInt8.self),"
-  ];
-  lines = lines + ["                    4096"];
-  lines = lines + ["                )"];
-  lines = lines + ["            }"];
-  lines = lines + ["        }"];
-  lines = lines + [
-    "        let _rbuf = _out.prefix(Int(_rlen))"
-  ];
-  lines = lines + ["        var _pos = _rbuf.startIndex"];
-  // Unpack result
-  let unpack = gen_unpack_expr(ret, types, "        ");
-  for ul in unpack {
-    lines = lines + [ul];
-  };
-  lines = lines + ["        return _v"];
-  lines = lines + ["    }"];
-  lines = lines + [""];
-  lines
+
+local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
+  let fname = get_str(f, "name")
+  let params = get_arr(f, "params")
+  let ret = json.get(f, "return") ?? json.null()
+  let doc = get_str(f, "doc")
+  let swift_params = params |> list.map((p) => "_ ${get_str(p, "name")}: ${swift_type(json.get(p, "type") ?? json.null())}") |> list.join(", ")
+  let doc_line = if doc != "" then ["    /// ${doc}"] else []
+  let pack_lines = params |> list.flat_map((p) =>
+    gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "        ")
+      |> list.map((pl) => pl)
+  )
+  let unpack_lines = gen_unpack_expr(ret, types, "        ") |> list.map((ul) => ul)
+
+  doc_line
+  + ["    public static func ${fname}(${swift_params}) -> ${swift_type(ret)} {",
+     "        var buf = Data()"]
+  + pack_lines
+  + ["        var _out = Data(count: 4096)",
+     "        let _rlen = buf.withUnsafeBytes { argPtr -> Int32 in",
+     "            _out.withUnsafeMutableBytes { outPtr -> Int32 in",
+     "                bridge_${fname}(",
+     "                    UnsafeMutablePointer(mutating: argPtr.baseAddress!.assumingMemoryBound(to: UInt8.self)),",
+     "                    Int32(buf.count),",
+     "                    outPtr.baseAddress!.assumingMemoryBound(to: UInt8.self),",
+     "                    4096",
+     "                )",
+     "            }",
+     "        }",
+     "        let _rbuf = _out.prefix(Int(_rlen))",
+     "        var _pos = _rbuf.startIndex"]
+  + unpack_lines
+  + ["        return _v",
+     "    }",
+     ""]
 }
 
-// ── Main ──
+// ── Public API ──
+
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null();
-  let module_name = get_str(iface, "module");
-  let types = get_arr(iface, "types");
-  let functions = get_arr(iface, "functions");
-  let cap_module = string.to_upper(string.slice(module_name, 0, 1)) + string.slice(module_name, 1, string.len(module_name));
-  var lines: List[String] = [];
-  lines = lines + ["// Auto-generated by almide-bridge"];
-  lines = lines + ["import Foundation"];
-  lines = lines + [""];
-  // Serialization helpers (UniFFI-style: avoid variable name collisions)
-  lines = lines + [
-    "fileprivate func writeInt64(_ buf: inout Data, _ value: Int64) {"
-  ];
-  lines = lines + ["    var v = value.bigEndian"];
-  lines = lines + [
-    "    buf.append(Data(bytes: &v, count: 8))"
-  ];
-  lines = lines + ["}"];
-  lines = lines + [
-    "fileprivate func writeFloat64(_ buf: inout Data, _ value: Double) {"
-  ];
-  lines = lines + ["    var v = value.bitPattern.bigEndian"];
-  lines = lines + [
-    "    buf.append(Data(bytes: &v, count: 8))"
-  ];
-  lines = lines + ["}"];
-  lines = lines + [
-    "fileprivate func writeUInt32(_ buf: inout Data, _ value: UInt32) {"
-  ];
-  lines = lines + ["    var v = value.bigEndian"];
-  lines = lines + [
-    "    buf.append(Data(bytes: &v, count: 4))"
-  ];
-  lines = lines + ["}"];
-  lines = lines + [
-    "fileprivate func writeBool(_ buf: inout Data, _ value: Bool) {"
-  ];
-  lines = lines + ["    buf.append(value ? 1 : 0)"];
-  lines = lines + ["}"];
-  lines = lines + [
-    "fileprivate func writeString(_ buf: inout Data, _ value: String) {"
-  ];
-  lines = lines + ["    let sb = Array(value.utf8)"];
-  lines = lines + ["    writeUInt32(&buf, UInt32(sb.count))"];
-  lines = lines + ["    buf.append(contentsOf: sb)"];
-  lines = lines + ["}"];
-  lines = lines + [
-    "fileprivate func readFloat64(_ data: Data, _ pos: inout Data.Index) -> Double {"
-  ];
-  lines = lines + [
-    "    let bits = data[pos..<pos+8].withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }"
-  ];
-  lines = lines + ["    pos += 8"];
-  lines = lines + ["    return Double(bitPattern: bits)"];
-  lines = lines + ["}"];
-  lines = lines + [
-    "fileprivate func readInt64(_ data: Data, _ pos: inout Data.Index) -> Int64 {"
-  ];
-  lines = lines + [
-    "    let v = data[pos..<pos+8].withUnsafeBytes { $0.load(as: Int64.self).bigEndian }"
-  ];
-  lines = lines + ["    pos += 8"];
-  lines = lines + ["    return v"];
-  lines = lines + ["}"];
-  lines = lines + [
-    "fileprivate func readString(_ data: Data, _ pos: inout Data.Index) -> String {"
-  ];
-  lines = lines + [
-    "    let slen = Int(data[pos..<pos+4].withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })"
-  ];
-  lines = lines + ["    pos += 4"];
-  lines = lines + [
-    '    let s = String(bytes: data[pos..<pos+slen], encoding: .utf8) ?? ""'
-  ];
-  lines = lines + ["    pos += slen"];
-  lines = lines + ["    return s"];
-  lines = lines + ["}"];
-  lines = lines + [""];
-  // Record + Variant types
-  for t in types {
-    let name = get_str(t, "name");
-    let kind = json.get(t, "kind") ?? json.null();
-    if get_kind(kind) == "record" then {
-      lines = lines + gen_record_struct(name, get_arr(kind, "fields"), t);
-    } else if get_kind(kind) == "variant" then {
-      lines = lines + gen_variant_enum(name, get_arr(kind, "cases"), t);
-    } else {
-      lines = lines;
-    };
-  };
-  // Bridge wrapper class
-  lines = lines + [
-    "public enum ${cap_module} {"
-  ];
-  for f in functions {
-    lines = lines + gen_function(f, module_name, types);
-  };
-  lines = lines + ["}"];
-  lines.join("\n")
+  let iface = json.parse(iface_json) ?? json.null()
+  let module_name = get_str(iface, "module")
+  let types = get_arr(iface, "types")
+  let functions = get_arr(iface, "functions")
+  let cap_module = string.to_upper(string.slice(module_name, 0, 1)) + string.slice(module_name, 1, string.len(module_name))
+
+  let header = [
+    "// Auto-generated by almide-bridge",
+    "import Foundation",
+    "",
+  ]
+  let helpers = [
+    "fileprivate func writeInt64(_ buf: inout Data, _ value: Int64) {",
+    "    var v = value.bigEndian",
+    "    buf.append(Data(bytes: &v, count: 8))",
+    "}",
+    "fileprivate func writeFloat64(_ buf: inout Data, _ value: Double) {",
+    "    var v = value.bitPattern.bigEndian",
+    "    buf.append(Data(bytes: &v, count: 8))",
+    "}",
+    "fileprivate func writeUInt32(_ buf: inout Data, _ value: UInt32) {",
+    "    var v = value.bigEndian",
+    "    buf.append(Data(bytes: &v, count: 4))",
+    "}",
+    "fileprivate func writeBool(_ buf: inout Data, _ value: Bool) {",
+    "    buf.append(value ? 1 : 0)",
+    "}",
+    "fileprivate func writeString(_ buf: inout Data, _ value: String) {",
+    "    let sb = Array(value.utf8)",
+    "    writeUInt32(&buf, UInt32(sb.count))",
+    "    buf.append(contentsOf: sb)",
+    "}",
+    "fileprivate func readFloat64(_ data: Data, _ pos: inout Data.Index) -> Double {",
+    "    let bits = data[pos..<pos+8].withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }",
+    "    pos += 8",
+    "    return Double(bitPattern: bits)",
+    "}",
+    "fileprivate func readInt64(_ data: Data, _ pos: inout Data.Index) -> Int64 {",
+    "    let v = data[pos..<pos+8].withUnsafeBytes { $0.load(as: Int64.self).bigEndian }",
+    "    pos += 8",
+    "    return v",
+    "}",
+    "fileprivate func readString(_ data: Data, _ pos: inout Data.Index) -> String {",
+    "    let slen = Int(data[pos..<pos+4].withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })",
+    "    pos += 4",
+    '    let s = String(bytes: data[pos..<pos+slen], encoding: .utf8) ?? ""',
+    "    pos += slen",
+    "    return s",
+    "}",
+    "",
+  ]
+  let type_defs = types |> list.flat_map((t) => {
+    let name = get_str(t, "name")
+    let kind = json.get(t, "kind") ?? json.null()
+    match get_kind(kind) {
+      "record"  => gen_record_struct(name, get_arr(kind, "fields"), t),
+      "variant" => gen_variant_enum(name, get_arr(kind, "cases"), t),
+      _         => [],
+    }
+  })
+  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types))
+
+  (header + helpers + type_defs + ["public enum ${cap_module} {"] + fn_defs + ["}"]) |> list.join("\n")
 }
