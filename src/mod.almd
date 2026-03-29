@@ -7,61 +7,34 @@
 //   bindgen.bindings.python.generate(iface_json) -> String
 //   bindgen.bindings.go.generate(iface_json) -> String
 //   ... (14 languages)
-import json
 
 // ── Shared helpers ──
-fn get_str(v: Value, key: String) -> String = json.as_string(json.get(v, key) ?? json.from_string("")) ?? ""
 
-fn get_arr(v: Value, key: String) -> List[Value] = json.as_array(json.get(v, key) ?? json.array([])) ?? []
+fn get_str(v: Value, key: String) -> String =
+  json.as_string(json.get(v, key) ?? json.from_string("")) ?? ""
+
+fn get_arr(v: Value, key: String) -> List[Value] =
+  json.as_array(json.get(v, key) ?? json.array([])) ?? []
 
 fn get_kind(v: Value) -> String = get_str(v, "kind")
 
 fn get_type(v: Value) -> Value = json.get(v, "type") ?? json.null()
 
-fn find_type_def(name: String, types: List[Value]) -> Value = {
-  var result = json.null();
-  for t in types {
-    if get_str(t, "name") == name then {
-      result = t;
-    } else {
-      result = result;
-    };
-  };
-  result
-}
+fn find_type_def(name: String, types: List[Value]) -> Value =
+  types |> list.find((t) => get_str(t, "name") == name) ?? json.null()
 
-fn is_record(name: String, types: List[Value]) -> Bool = {
-  let t = find_type_def(name, types);
-  get_kind(json.get(t, "kind") ?? json.null()) == "record"
-}
+fn is_record(name: String, types: List[Value]) -> Bool =
+  get_kind(json.get(find_type_def(name, types), "kind") ?? json.null()) == "record"
 
-fn is_variant(name: String, types: List[Value]) -> Bool = {
-  let t = find_type_def(name, types);
-  get_kind(json.get(t, "kind") ?? json.null()) == "variant"
-}
+fn is_variant(name: String, types: List[Value]) -> Bool =
+  get_kind(json.get(find_type_def(name, types), "kind") ?? json.null()) == "variant"
 
 // ── Public API ──
+
 fn version() -> String = "0.1.0"
 
 fn supported_languages() -> List[String] = [
-  "python",
-  "go",
-  "ruby",
-  "swift",
-  "csharp",
-  "dart",
-  "kotlin",
-  "java",
-  "c",
-  "zig",
-  "nim",
-  "elixir",
-  "php",
-  "lua",
-  "cpp",
-  "rust",
-  "javascript",
-  "scala",
-  "julia",
-  "powershell"
+  "python", "go", "ruby", "swift", "csharp", "dart",
+  "kotlin", "java", "c", "zig", "nim", "elixir", "php", "lua",
+  "cpp", "rust", "javascript", "scala", "julia", "powershell"
 ]
