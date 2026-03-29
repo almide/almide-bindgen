@@ -3,24 +3,20 @@
 // Usage: almide run nim.almd -- interface.json
 //
 // Produces a .nim file using dynlib pragma for FFI and cast-based serialization.
-
 import json
 
 // ── JSON helpers ──
+fn get_str(v: Value, key: String) -> String = json.as_string(json.get(v, key) ?? json.from_string("")) ?? ""
 
-fn get_str(v: Value, key: String) -> String =
-  json.as_string(json.get(v, key) ?? json.from_string("")) ?? ""
-
-fn get_arr(v: Value, key: String) -> List[Value] =
-  json.as_array(json.get(v, key) ?? json.array([])) ?? []
+fn get_arr(v: Value, key: String) -> List[Value] = json.as_array(json.get(v, key) ?? json.array([])) ?? []
 
 fn get_kind(v: Value) -> String = get_str(v, "kind")
+
 fn get_type(v: Value) -> Value = json.get(v, "type") ?? json.null()
 
 // ── Nim type mapping ──
-
 fn nim_type(ty: Value) -> String = {
-  let kind = get_kind(ty)
+  let kind = get_kind(ty);
   if kind == "float" then "float64"
   else if kind == "int" then "int64"
   else if kind == "string" then "string"
@@ -32,300 +28,392 @@ fn nim_type(ty: Value) -> String = {
 }
 
 // ── Type classification ──
-
 fn find_type_def(name: String, types: List[Value]) -> Value = {
-  var result = json.null()
+  var result = json.null();
   for t in types {
-    if get_str(t, "name") == name then result = t else result = result
-  }
+    if get_str(t, "name") == name then {
+      result = t;
+    } else {
+      result = result;
+    };
+  };
   result
 }
 
 fn is_record(name: String, types: List[Value]) -> Bool = {
-  let t = find_type_def(name, types)
+  let t = find_type_def(name, types);
   get_kind(json.get(t, "kind") ?? json.null()) == "record"
 }
 
 fn is_variant(name: String, types: List[Value]) -> Bool = {
-  let t = find_type_def(name, types)
+  let t = find_type_def(name, types);
   get_kind(json.get(t, "kind") ?? json.null()) == "variant"
 }
 
 // ── Pack code generation ──
-
 fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let kind = get_kind(ty)
-  if kind == "int" then ["${indent}packI64(buf, ${expr})"]
-  else if kind == "float" then ["${indent}packF64(buf, ${expr})"]
-  else if kind == "bool" then ["${indent}buf.add(if ${expr}: chr(1) else: chr(0))"]
-  else if kind == "string" then ["${indent}packStr(buf, ${expr})"]
+  let kind = get_kind(ty);
+  if kind == "int" then [
+    "${indent}packI64(buf, ${expr})"
+  ]
+  else if kind == "float" then [
+    "${indent}packF64(buf, ${expr})"
+  ]
+  else if kind == "bool" then [
+    "${indent}buf.add(if ${expr}: chr(1) else: chr(0))"
+  ]
+  else if kind == "string" then [
+    "${indent}packStr(buf, ${expr})"
+  ]
   else if kind == "named" then {
-    let name = get_str(ty, "name")
+    let name = get_str(ty, "name");
     if is_record(name, types) then {
-      let tdef = find_type_def(name, types)
-      let fields = get_arr(json.get(tdef, "kind") ?? json.null(), "fields")
-      var lines: List[String] = []
+      let tdef = find_type_def(name, types);
+      let fields = get_arr(json.get(tdef, "kind") ?? json.null(), "fields");
+      var lines: List[String] = [];
       for f in fields {
-        let fname = get_str(f, "name")
-        let ftype = get_type(f)
-        lines = lines + gen_pack_expr("${expr}.${fname}", ftype, types, indent)
-      }
+        let fname = get_str(f, "name");
+        let ftype = get_type(f);
+        lines = lines + gen_pack_expr("${expr}.${fname}", ftype, types, indent);
+      };
       lines
     } else if is_variant(name, types) then {
-      let tdef = find_type_def(name, types)
-      let cases = get_arr(json.get(tdef, "kind") ?? json.null(), "cases")
-      var lines: List[String] = []
-      lines = lines + ["${indent}case ${expr}.kind"]
-      var tag_idx = 0
+      let tdef = find_type_def(name, types);
+      let cases = get_arr(json.get(tdef, "kind") ?? json.null(), "cases");
+      var lines: List[String] = [];
+      lines = lines + [
+        "${indent}case ${expr}.kind"
+      ];
+      var tag_idx = 0;
       for case in cases {
-        let cname = get_str(case, "name")
-        lines = lines + ["${indent}of ${name}Kind.${cname}:"]
-        lines = lines + ["${indent}  packU32(buf, ${int.to_string(tag_idx)}'u32)"]
-        let payload = json.get(case, "payload")
+        let cname = get_str(case, "name");
+        lines = lines + [
+          "${indent}of ${name}Kind.${cname}:"
+        ];
+        lines = lines + [
+          "${indent}  packU32(buf, ${int.to_string(tag_idx)}'u32)"
+        ];
+        let payload = json.get(case, "payload");
         match payload {
           some(pl) => {
             if get_kind(pl) == "tuple" then {
-              let pfields = get_arr(pl, "fields")
-              var pi = 0
+              let pfields = get_arr(pl, "fields");
+              var pi = 0;
               for pf in pfields {
-                lines = lines + gen_pack_expr("${expr}.v${int.to_string(pi)}", pf, types, indent + "  ")
-                pi = pi + 1
+                lines = lines + gen_pack_expr("${expr}.v${int.to_string(pi)}", pf, types, indent + "  ");
+                pi = pi + 1;
               }
-            } else lines = lines
+            } else {
+              lines = lines;
+            }
           },
-          none => { },
-        }
-        tag_idx = tag_idx + 1
-      }
+          none => {
+          },
+        };
+        tag_idx = tag_idx + 1;
+      };
       lines
-    } else ["${indent}# unknown named type: ${name}"]
-  }
-  else ["${indent}# unknown pack type: ${kind}"]
+    } else [
+      "${indent}# unknown named type: ${name}"
+    ]
+  } else [
+    "${indent}# unknown pack type: ${kind}"
+  ]
 }
 
 // ── Unpack code generation ──
-
 fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let kind = get_kind(ty)
-  if kind == "int" then ["${indent}let _v = unpackI64(rbuf, pos)"]
-  else if kind == "float" then ["${indent}let _v = unpackF64(rbuf, pos)"]
+  let kind = get_kind(ty);
+  if kind == "int" then [
+    "${indent}let _v = unpackI64(rbuf, pos)"
+  ]
+  else if kind == "float" then [
+    "${indent}let _v = unpackF64(rbuf, pos)"
+  ]
   else if kind == "bool" then {
-    var lines: List[String] = []
-    lines = lines + ["${indent}let _v = rbuf[pos] != 0"]
-    lines = lines + ["${indent}pos += 1"]
+    var lines: List[String] = [];
+    lines = lines + [
+      "${indent}let _v = rbuf[pos] != 0"
+    ];
+    lines = lines + [
+      "${indent}pos += 1"
+    ];
     lines
-  }
-  else if kind == "string" then ["${indent}let _v = unpackStr(rbuf, pos)"]
+  } else if kind == "string" then [
+    "${indent}let _v = unpackStr(rbuf, pos)"
+  ]
   else if kind == "named" then {
-    let name = get_str(ty, "name")
+    let name = get_str(ty, "name");
     if is_record(name, types) then {
-      let tdef = find_type_def(name, types)
-      let fields = get_arr(json.get(tdef, "kind") ?? json.null(), "fields")
-      var lines: List[String] = []
+      let tdef = find_type_def(name, types);
+      let fields = get_arr(json.get(tdef, "kind") ?? json.null(), "fields");
+      var lines: List[String] = [];
       for f in fields {
-        let fname = get_str(f, "name")
-        let ftype = get_type(f)
-        let unpack = gen_unpack_expr(ftype, types, indent)
-        lines = lines + unpack.map((l) => string.replace(l, "_v", "_f_${fname}"))
-      }
-      let ctor_args = fields.map((f2) => "${get_str(f2, "name")}: _f_${get_str(f2, "name")}").join(", ")
-      lines = lines + ["${indent}let _v = ${name}(${ctor_args})"]
+        let fname = get_str(f, "name");
+        let ftype = get_type(f);
+        let unpack = gen_unpack_expr(ftype, types, indent);
+        lines = lines + unpack.map((l) => string.replace(l, "_v", "_f_${fname}"));
+      };
+      let ctor_args = fields.map((f2) => "${get_str(f2, "name")}: _f_${get_str(f2, "name")}").join(", ");
+      lines = lines + [
+        "${indent}let _v = ${name}(${ctor_args})"
+      ];
       lines
-    } else ["${indent}# unknown named type: ${name}"]
-  }
-  else ["${indent}# unknown unpack type: ${kind}"]
+    } else [
+      "${indent}# unknown named type: ${name}"
+    ]
+  } else [
+    "${indent}# unknown unpack type: ${kind}"
+  ]
 }
 
 // ── Generate record object type ──
-
 fn gen_record_type(name: String, fields: List[Value], type_def: Value) -> List[String] = {
-  var lines: List[String] = []
-  let doc = get_str(type_def, "doc")
-  if doc != "" then lines = lines + ["  ## ${doc}"] else lines = lines
-  lines = lines + ["  ${name}* = object"]
+  var lines: List[String] = [];
+  let doc = get_str(type_def, "doc");
+  if doc != "" then {
+    lines = lines + [
+      "  ## ${doc}"
+    ];
+  } else {
+    lines = lines;
+  };
+  lines = lines + [
+    "  ${name}* = object"
+  ];
   for f in fields {
-    let fname = get_str(f, "name")
-    let ftype = get_type(f)
-    lines = lines + ["    ${fname}*: ${nim_type(ftype)}"]
-  }
-  lines = lines + [""]
+    let fname = get_str(f, "name");
+    let ftype = get_type(f);
+    lines = lines + [
+      "    ${fname}*: ${nim_type(ftype)}"
+    ];
+  };
+  lines = lines + [""];
   lines
 }
 
 // ── Generate variant object type ──
-
 fn gen_variant_type(name: String, cases: List[Value], type_def: Value) -> List[String] = {
-  var lines: List[String] = []
-  let doc = get_str(type_def, "doc")
-  if doc != "" then lines = lines + ["  ## ${doc}"] else lines = lines
-
+  var lines: List[String] = [];
+  let doc = get_str(type_def, "doc");
+  if doc != "" then {
+    lines = lines + [
+      "  ## ${doc}"
+    ];
+  } else {
+    lines = lines;
+  };
   // Kind enum
-  let case_names = cases.map((c) => get_str(c, "name")).join(", ")
-  lines = lines + ["  ${name}Kind* = enum"]
+  let case_names = cases.map((c) => get_str(c, "name")).join(", ");
+  lines = lines + [
+    "  ${name}Kind* = enum"
+  ];
   for case in cases {
-    let cname = get_str(case, "name")
-    lines = lines + ["    ${cname}"]
-  }
-  lines = lines + [""]
-
+    let cname = get_str(case, "name");
+    lines = lines + [
+      "    ${cname}"
+    ];
+  };
+  lines = lines + [""];
   // Object variant
-  lines = lines + ["  ${name}* = object"]
-  lines = lines + ["    case kind*: ${name}Kind"]
+  lines = lines + [
+    "  ${name}* = object"
+  ];
+  lines = lines + [
+    "    case kind*: ${name}Kind"
+  ];
   for case in cases {
-    let cname = get_str(case, "name")
-    let payload = json.get(case, "payload")
+    let cname = get_str(case, "name");
+    let payload = json.get(case, "payload");
     match payload {
       some(pl) => {
         if get_kind(pl) == "tuple" then {
-          let pfields = get_arr(pl, "fields")
-          var pi = 0
+          let pfields = get_arr(pl, "fields");
+          var pi = 0;
           for pf in pfields {
-            lines = lines + ["    of ${name}Kind.${cname}: v${int.to_string(pi)}*: ${nim_type(pf)}"]
-            pi = pi + 1
+            lines = lines + [
+              "    of ${name}Kind.${cname}: v${int.to_string(pi)}*: ${nim_type(pf)}"
+            ];
+            pi = pi + 1;
           }
         } else {
-          lines = lines + ["    of ${name}Kind.${cname}: discard"]
+          lines = lines + [
+            "    of ${name}Kind.${cname}: discard"
+          ];
         }
       },
       none => {
-        lines = lines + ["    of ${name}Kind.${cname}: discard"]
+        lines = lines + [
+          "    of ${name}Kind.${cname}: discard"
+        ];
       },
-    }
-  }
-  lines = lines + [""]
+    };
+  };
+  lines = lines + [""];
   lines
 }
 
 // ── Generate function wrapper ──
-
 fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
-  let fname = get_str(f, "name")
-  let params = get_arr(f, "params")
-  let ret = json.get(f, "return") ?? json.null()
-  let doc = get_str(f, "doc")
-
-  let nim_params = params.map((p) => "${get_str(p, "name")}: ${nim_type(json.get(p, "type") ?? json.null())}").join(", ")
-
-  var lines: List[String] = []
-  if doc != "" then lines = lines + ["## ${doc}"] else lines = lines
-  lines = lines + ["proc ${fname}*(${nim_params}): ${nim_type(ret)} ="]
-  lines = lines + ["  var buf = \"\""]
-
+  let fname = get_str(f, "name");
+  let params = get_arr(f, "params");
+  let ret = json.get(f, "return") ?? json.null();
+  let doc = get_str(f, "doc");
+  let nim_params = params.map((p) => "${get_str(p, "name")}: ${nim_type(json.get(p, "type") ?? json.null())}").join(", ");
+  var lines: List[String] = [];
+  if doc != "" then {
+    lines = lines + [
+      "## ${doc}"
+    ];
+  } else {
+    lines = lines;
+  };
+  lines = lines + [
+    "proc ${fname}*(${nim_params}): ${nim_type(ret)} ="
+  ];
+  lines = lines + ['  var buf = ""'];
   // Pack args
   for p in params {
-    let pname = get_str(p, "name")
-    let ptype = json.get(p, "type") ?? json.null()
-    let pack = gen_pack_expr(pname, ptype, types, "  ")
+    let pname = get_str(p, "name");
+    let ptype = json.get(p, "type") ?? json.null();
+    let pack = gen_pack_expr(pname, ptype, types, "  ");
     for pl in pack {
-      lines = lines + [pl]
-    }
-  }
-
+      lines = lines + [pl];
+    };
+  };
   // Call bridge
-  lines = lines + ["  var outBuf = newString(4096)"]
-  lines = lines + ["  let rlen = bridge_${fname}(buf.cstring, buf.len.cint, outBuf.cstring, 4096.cint)"]
-  lines = lines + ["  let rbuf = outBuf[0 ..< rlen]"]
-  lines = lines + ["  var pos = 0"]
-
+  lines = lines + ["  var outBuf = newString(4096)"];
+  lines = lines + [
+    "  let rlen = bridge_${fname}(buf.cstring, buf.len.cint, outBuf.cstring, 4096.cint)"
+  ];
+  lines = lines + ["  let rbuf = outBuf[0 ..< rlen]"];
+  lines = lines + ["  var pos = 0"];
   // Unpack result
-  let unpack = gen_unpack_expr(ret, types, "  ")
+  let unpack = gen_unpack_expr(ret, types, "  ");
   for ul in unpack {
-    lines = lines + [ul]
-  }
-  lines = lines + ["  return _v"]
-  lines = lines + [""]
+    lines = lines + [ul];
+  };
+  lines = lines + ["  return _v"];
+  lines = lines + [""];
   lines
 }
 
 // ── Main ──
-
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
-
-  let module_name = get_str(iface, "module")
-  let types = get_arr(iface, "types")
-  let functions = get_arr(iface, "functions")
-
-  var lines: List[String] = []
-  lines = lines + ["# Auto-generated by almide-bridge"]
-  lines = lines + ["import std/endians"]
-  lines = lines + [""]
-
+  let iface = json.parse(iface_json) ?? json.null();
+  let module_name = get_str(iface, "module");
+  let types = get_arr(iface, "types");
+  let functions = get_arr(iface, "functions");
+  var lines: List[String] = [];
+  lines = lines + ["# Auto-generated by almide-bridge"];
+  lines = lines + ["import std/endians"];
+  lines = lines + [""];
   // Library loading
-  let lib_name = "libalmide_${module_name}"
-  lines = lines + ["const libName = when defined(macosx): \"${lib_name}.dylib\""]
-  lines = lines + ["               elif defined(windows): \"${lib_name}.dll\""]
-  lines = lines + ["               else: \"${lib_name}.so\""]
-  lines = lines + [""]
-
+  let lib_name = "libalmide_${module_name}";
+  lines = lines + [
+    "const libName = when defined(macosx): \"${lib_name}.dylib\""
+  ];
+  lines = lines + [
+    "               elif defined(windows): \"${lib_name}.dll\""
+  ];
+  lines = lines + [
+    "               else: \"${lib_name}.so\""
+  ];
+  lines = lines + [""];
   // Bridge function declarations
   for f in functions {
-    let fname = get_str(f, "name")
-    lines = lines + ["proc bridge_${fname}(args: cstring, argsLen: cint, outBuf: cstring, outCap: cint): cint {.dynlib: libName, importc.}"]
-  }
-  lines = lines + [""]
-
+    let fname = get_str(f, "name");
+    lines = lines + [
+      "proc bridge_${fname}(args: cstring, argsLen: cint, outBuf: cstring, outCap: cint): cint {.dynlib: libName, importc.}"
+    ];
+  };
+  lines = lines + [""];
   // Serialization helpers
-  lines = lines + ["proc packI64(buf: var string, v: int64) ="]
-  lines = lines + ["  var be: int64"]
-  lines = lines + ["  bigEndian64(addr be, unsafeAddr v)"]
-  lines = lines + ["  buf.add(cast[array[8, char]](be).join(\"\"))"]
-  lines = lines + [""]
-  lines = lines + ["proc packF64(buf: var string, v: float64) ="]
-  lines = lines + ["  var bits = cast[uint64](v)"]
-  lines = lines + ["  var be: uint64"]
-  lines = lines + ["  bigEndian64(addr be, addr bits)"]
-  lines = lines + ["  buf.add(cast[array[8, char]](be).join(\"\"))"]
-  lines = lines + [""]
-  lines = lines + ["proc packU32(buf: var string, v: uint32) ="]
-  lines = lines + ["  var be: uint32"]
-  lines = lines + ["  bigEndian32(addr be, unsafeAddr v)"]
-  lines = lines + ["  buf.add(cast[array[4, char]](be).join(\"\"))"]
-  lines = lines + [""]
-  lines = lines + ["proc packStr(buf: var string, s: string) ="]
-  lines = lines + ["  packU32(buf, s.len.uint32)"]
-  lines = lines + ["  buf.add(s)"]
-  lines = lines + [""]
-  lines = lines + ["proc unpackI64(buf: string, pos: var int): int64 ="]
-  lines = lines + ["  var be: int64"]
-  lines = lines + ["  copyMem(addr be, unsafeAddr buf[pos], 8)"]
-  lines = lines + ["  bigEndian64(addr result, addr be)"]
-  lines = lines + ["  pos += 8"]
-  lines = lines + [""]
-  lines = lines + ["proc unpackF64(buf: string, pos: var int): float64 ="]
-  lines = lines + ["  var be: uint64"]
-  lines = lines + ["  copyMem(addr be, unsafeAddr buf[pos], 8)"]
-  lines = lines + ["  var bits: uint64"]
-  lines = lines + ["  bigEndian64(addr bits, addr be)"]
-  lines = lines + ["  result = cast[float64](bits)"]
-  lines = lines + ["  pos += 8"]
-  lines = lines + [""]
-  lines = lines + ["proc unpackStr(buf: string, pos: var int): string ="]
-  lines = lines + ["  var belen: uint32"]
-  lines = lines + ["  copyMem(addr belen, unsafeAddr buf[pos], 4)"]
-  lines = lines + ["  var slen: uint32"]
-  lines = lines + ["  bigEndian32(addr slen, addr belen)"]
-  lines = lines + ["  pos += 4"]
-  lines = lines + ["  result = buf[pos ..< pos + slen.int]"]
-  lines = lines + ["  pos += slen.int"]
-  lines = lines + [""]
-
+  lines = lines + [
+    "proc packI64(buf: var string, v: int64) ="
+  ];
+  lines = lines + ["  var be: int64"];
+  lines = lines + ["  bigEndian64(addr be, unsafeAddr v)"];
+  lines = lines + [
+    '  buf.add(cast[array[8, char]](be).join(""))'
+  ];
+  lines = lines + [""];
+  lines = lines + [
+    "proc packF64(buf: var string, v: float64) ="
+  ];
+  lines = lines + ["  var bits = cast[uint64](v)"];
+  lines = lines + ["  var be: uint64"];
+  lines = lines + ["  bigEndian64(addr be, addr bits)"];
+  lines = lines + [
+    '  buf.add(cast[array[8, char]](be).join(""))'
+  ];
+  lines = lines + [""];
+  lines = lines + [
+    "proc packU32(buf: var string, v: uint32) ="
+  ];
+  lines = lines + ["  var be: uint32"];
+  lines = lines + ["  bigEndian32(addr be, unsafeAddr v)"];
+  lines = lines + [
+    '  buf.add(cast[array[4, char]](be).join(""))'
+  ];
+  lines = lines + [""];
+  lines = lines + [
+    "proc packStr(buf: var string, s: string) ="
+  ];
+  lines = lines + ["  packU32(buf, s.len.uint32)"];
+  lines = lines + ["  buf.add(s)"];
+  lines = lines + [""];
+  lines = lines + [
+    "proc unpackI64(buf: string, pos: var int): int64 ="
+  ];
+  lines = lines + ["  var be: int64"];
+  lines = lines + [
+    "  copyMem(addr be, unsafeAddr buf[pos], 8)"
+  ];
+  lines = lines + ["  bigEndian64(addr result, addr be)"];
+  lines = lines + ["  pos += 8"];
+  lines = lines + [""];
+  lines = lines + [
+    "proc unpackF64(buf: string, pos: var int): float64 ="
+  ];
+  lines = lines + ["  var be: uint64"];
+  lines = lines + [
+    "  copyMem(addr be, unsafeAddr buf[pos], 8)"
+  ];
+  lines = lines + ["  var bits: uint64"];
+  lines = lines + ["  bigEndian64(addr bits, addr be)"];
+  lines = lines + ["  result = cast[float64](bits)"];
+  lines = lines + ["  pos += 8"];
+  lines = lines + [""];
+  lines = lines + [
+    "proc unpackStr(buf: string, pos: var int): string ="
+  ];
+  lines = lines + ["  var belen: uint32"];
+  lines = lines + [
+    "  copyMem(addr belen, unsafeAddr buf[pos], 4)"
+  ];
+  lines = lines + ["  var slen: uint32"];
+  lines = lines + ["  bigEndian32(addr slen, addr belen)"];
+  lines = lines + ["  pos += 4"];
+  lines = lines + ["  result = buf[pos ..< pos + slen.int]"];
+  lines = lines + ["  pos += slen.int"];
+  lines = lines + [""];
   // Types
-  lines = lines + ["type"]
+  lines = lines + ["type"];
   for t in types {
-    let name = get_str(t, "name")
-    let kind = json.get(t, "kind") ?? json.null()
+    let name = get_str(t, "name");
+    let kind = json.get(t, "kind") ?? json.null();
     if get_kind(kind) == "record" then {
-      lines = lines + gen_record_type(name, get_arr(kind, "fields"), t)
+      lines = lines + gen_record_type(name, get_arr(kind, "fields"), t);
     } else if get_kind(kind) == "variant" then {
-      lines = lines + gen_variant_type(name, get_arr(kind, "cases"), t)
-    } else lines = lines
-  }
-
+      lines = lines + gen_variant_type(name, get_arr(kind, "cases"), t);
+    } else {
+      lines = lines;
+    };
+  };
   // Functions
   for f in functions {
-    lines = lines + gen_function(f, module_name, types)
-  }
-
+    lines = lines + gen_function(f, module_name, types);
+  };
   lines.join("\n")
 }
