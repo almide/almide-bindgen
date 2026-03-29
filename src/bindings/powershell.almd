@@ -5,16 +5,15 @@
 // Produces a .ps1/.psm1 file using Add-Type with DllImport for FFI
 // and [System.BitConverter] for serialization.
 // Records become PSCustomObject, variants become PSCustomObject with Tag.
-import json
+import self as bindgen
 
-// ── JSON helpers ──
-fn get_str(v: Value, key: String) -> String = json.as_string(json.get(v, key) ?? json.from_string("")) ?? ""
-
-fn get_arr(v: Value, key: String) -> List[Value] = json.as_array(json.get(v, key) ?? json.array([])) ?? []
-
-fn get_kind(v: Value) -> String = get_str(v, "kind")
-
-fn get_type(v: Value) -> Value = json.get(v, "type") ?? json.null()
+local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)
+local fn get_arr(v: Value, key: String) -> List[Value] = bindgen.get_arr(v, key)
+local fn get_kind(v: Value) -> String = bindgen.get_kind(v)
+local fn get_type(v: Value) -> Value = bindgen.get_type(v)
+local fn find_type_def(name: String, types: List[Value]) -> Value = bindgen.find_type_def(name, types)
+local fn is_record(name: String, types: List[Value]) -> Bool = bindgen.is_record(name, types)
+local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── PowerShell type mapping ──
 fn ps_type(ty: Value) -> String = {
@@ -26,29 +25,6 @@ fn ps_type(ty: Value) -> String = {
   else if kind == "named" then "[PSCustomObject]"
   else if kind == "option" then "[object]"
   else if kind == "list" then "[array]" else "[object]"
-}
-
-// ── Type classification ──
-fn find_type_def(name: String, types: List[Value]) -> Value = {
-  var result = json.null();
-  for t in types {
-    if get_str(t, "name") == name then {
-      result = t;
-    } else {
-      result = result;
-    };
-  };
-  result
-}
-
-fn is_record(name: String, types: List[Value]) -> Bool = {
-  let t = find_type_def(name, types);
-  get_kind(json.get(t, "kind") ?? json.null()) == "record"
-}
-
-fn is_variant(name: String, types: List[Value]) -> Bool = {
-  let t = find_type_def(name, types);
-  get_kind(json.get(t, "kind") ?? json.null()) == "variant"
 }
 
 // ── Pack code generation ──
