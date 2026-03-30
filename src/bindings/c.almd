@@ -6,269 +6,236 @@
 // helper macros/inline functions for packing/unpacking.
 import json
 import self as bindgen
+import json
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)
+
 local fn get_arr(v: Value, key: String) -> List[Value] = bindgen.get_arr(v, key)
+
 local fn get_kind(v: Value) -> String = bindgen.get_kind(v)
+
 local fn get_type(v: Value) -> Value = bindgen.get_type(v)
+
 local fn find_type_def(name: String, types: List[Value]) -> Value = bindgen.find_type_def(name, types)
+
 local fn is_record(name: String, types: List[Value]) -> Bool = bindgen.is_record(name, types)
-local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── C type mapping ──
-
-local fn c_type(ty: Value) -> String =
-  match get_kind(ty) {
-    "float"  => "double",
-    "int"    => "int64_t",
-    "string" => "const char*",
-    "bool"   => "uint8_t",
-    "named"  => get_str(ty, "name"),
-    "option" => "${c_type(json.get(ty, "inner") ?? json.null())}*",
-    _        => "void*",
-  }
+local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Pack code generation ──
-
-local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["${indent}almide_pack_i64(buf, &pos, ${expr});"],
-    "float"  => ["${indent}almide_pack_f64(buf, &pos, ${expr});"],
-    "bool"   => ["${indent}buf[pos++] = ${expr} ? 1 : 0;"],
-    "string" => ["${indent}almide_pack_str(buf, &pos, ${expr});"],
-    "named" => gen_pack_named(expr, ty, types, indent),
-    _ => ["${indent}/* unknown pack type: ${get_kind(ty)} */"],
-  }
-
-local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types, indent))
-  }
-  else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
-  else ["${indent}/* unknown named type: ${name} */"]
+local fn c_type(ty: Value) -> String = match get_kind(ty) {
+  "float" => "double",
+  "int" => "int64_t",
+  "string" => "const char*",
+  "bool" => "uint8_t",
+  "named" => get_str(ty, "name"),
+  "option" => "${c_type(json.get(ty, "inner") ?? json.null())}*",
+  _ => "void*",
 }
 
-local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
-  (cases
-    |> list.enumerate
-    |> list.flat_map((entry) => {
-      let (idx, case) = entry
-      let cname = get_str(case, "name")
-      let cname_upper = string.to_upper(cname)
-      let cond = if idx == 0 then "if" else "} else if"
-      let header = [
-        "${indent}${cond} (${expr}.tag == ${name}_${cname_upper}) {",
-        "${indent}    almide_pack_u32(buf, &pos, ${int.to_string(idx)});",
-      ]
-      let payload_lines = match json.get(case, "payload") {
-        some(pl) => if get_kind(pl) == "tuple" then
-          get_arr(pl, "fields")
-            |> list.enumerate
-            |> list.flat_map((pe) => {
-              let (pi, pf) = pe
-              gen_pack_expr("${expr}.v.${cname |> string.to_lower}.v${int.to_string(pi)}", pf, types, indent + "    ")
-            })
-          else [],
-        none => [],
-      }
-      header + payload_lines
-    }))
-  + ["${indent}}"]
+local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}almide_pack_i64(buf, &pos, ${expr});"
+  ],
+  "float" => [
+    "${indent}almide_pack_f64(buf, &pos, ${expr});"
+  ],
+  "bool" => [
+    "${indent}buf[pos++] = ${expr} ? 1 : 0;"
+  ],
+  "string" => [
+    "${indent}almide_pack_str(buf, &pos, ${expr});"
+  ],
+  "named" => gen_pack_named(expr, ty, types, indent),
+  _ => [
+    "${indent}/* unknown pack type: ${get_kind(ty)} */"
+  ],
+}
+
+local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types, indent))
+  } else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
+  else [
+    "${indent}/* unknown named type: ${name} */"
+  ]
 }
 
 // ── Unpack code generation ──
+local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
+  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases");
+  (cases |> list.enumerate |> list.flat_map((entry) => {
+    let (idx, case) = entry;
+    let cname = get_str(case, "name");
+    let cname_upper = string.to_upper(cname);
+    let cond = if idx == 0 then "if" else "} else if";
+    let header = [
+      "${indent}${cond} (${expr}.tag == ${name}_${cname_upper}) {",
+      "${indent}    almide_pack_u32(buf, &pos, ${int.to_string(idx)});"
+    ];
+    let payload_lines = match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then get_arr(pl, "fields") |> list.enumerate |> list.flat_map((pe) => {
+        let (pi, pf) = pe;
+        gen_pack_expr("${expr}.v.${cname |> string.to_lower}.v${int.to_string(pi)}", pf, types, indent + "    ")
+      })
+      else [],
+      none => [],
+    };
+    header + payload_lines
+  })) + [
+    "${indent}}"
+  ]
+}
 
-local fn gen_unpack_expr(target: String, ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["${indent}${target} = almide_unpack_i64(out, &pos);"],
-    "float"  => ["${indent}${target} = almide_unpack_f64(out, &pos);"],
-    "bool"   => ["${indent}${target} = out[pos++];"],
-    "string" => ["${indent}${target} = almide_unpack_str(out, &pos);"],
-    "named" => gen_unpack_named(target, ty, types, indent),
-    _ => ["${indent}/* unknown unpack type: ${get_kind(ty)} */"],
-  }
-
-local fn gen_unpack_named(target: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    fields |> list.flat_map((f) => gen_unpack_expr("${target}.${get_str(f, "name")}", get_type(f), types, indent))
-  } else ["${indent}/* unknown named type: ${name} */"]
+local fn gen_unpack_expr(target: String, ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}${target} = almide_unpack_i64(out, &pos);"
+  ],
+  "float" => [
+    "${indent}${target} = almide_unpack_f64(out, &pos);"
+  ],
+  "bool" => [
+    "${indent}${target} = out[pos++];"
+  ],
+  "string" => [
+    "${indent}${target} = almide_unpack_str(out, &pos);"
+  ],
+  "named" => gen_unpack_named(target, ty, types, indent),
+  _ => [
+    "${indent}/* unknown unpack type: ${get_kind(ty)} */"
+  ],
 }
 
 // ── Generate record struct ──
-
-local fn gen_record_struct(name: String, fields: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["/* ${doc} */"] else []
-  let field_lines = fields |> list.map((f) =>
-    "    ${c_type(get_type(f))} ${get_str(f, "name")};"
-  )
-
-  doc_line
-  + ["typedef struct {"]
-  + field_lines
-  + ["} ${name};", ""]
+local fn gen_unpack_named(target: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    fields |> list.flat_map((f) => gen_unpack_expr("${target}.${get_str(f, "name")}", get_type(f), types, indent))
+  } else [
+    "${indent}/* unknown named type: ${name} */"
+  ]
 }
 
 // ── Generate variant struct ──
-
-local fn gen_variant_struct(name: String, cases: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["/* ${doc} */"] else []
-  let tag_lines = cases
-    |> list.enumerate
-    |> list.map((entry) => {
-      let (idx, case) = entry
-      let cname_upper = string.to_upper(get_str(case, "name"))
-      "    ${name}_${cname_upper} = ${int.to_string(idx)},"
-    })
-  let payload_structs = cases |> list.flat_map((case) => {
-    let cname = get_str(case, "name")
-    match json.get(case, "payload") {
-      some(pl) => if get_kind(pl) == "tuple" then {
-        let pfield_lines = get_arr(pl, "fields")
-          |> list.enumerate
-          |> list.map((pe) => {
-            let (pi, pf) = pe
-            "    ${c_type(pf)} v${int.to_string(pi)};"
-          })
-        ["typedef struct {"] + pfield_lines + ["} ${name}_${cname}_Data;", ""]
-      } else [],
-      none => [],
-    }
-  })
-  let union_members = cases |> list.flat_map((case) => {
-    let cname = get_str(case, "name")
-    match json.get(case, "payload") {
-      some(pl) => if get_kind(pl) == "tuple" then
-        ["        ${name}_${cname}_Data ${cname |> string.to_lower};"]
-        else [],
-      none => [],
-    }
-  })
-
-  doc_line
-  + ["typedef enum {"]
-  + tag_lines
-  + ["} ${name}Tag;", ""]
-  + payload_structs
-  + ["typedef struct {",
-     "    ${name}Tag tag;",
-     "    union {"]
-  + union_members
-  + ["    } v;",
-     "} ${name};",
-     ""]
+local fn gen_record_struct(name: String, fields: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "/* ${doc} */"
+  ]
+  else [];
+  let field_lines = fields |> list.map((f) => "    ${c_type(get_type(f))} ${get_str(f, "name")};");
+  doc_line + ["typedef struct {"] + field_lines + [
+    "} ${name};",
+    ""
+  ]
 }
 
 // ── Generate function wrapper ──
-
-local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
-  let fname = get_str(f, "name")
-  let params = get_arr(f, "params")
-  let ret = json.get(f, "return") ?? json.null()
-  let doc = get_str(f, "doc")
-  let c_params = params |> list.map((p) => "${c_type(json.get(p, "type") ?? json.null())} ${get_str(p, "name")}") |> list.join(", ")
-  let doc_line = if doc != "" then ["/* ${doc} */"] else []
-  let pack_lines = params |> list.flat_map((p) =>
-    gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "    ")
-      |> list.map((pl) => pl)
-  )
-  let unpack_lines = gen_unpack_expr("_result", ret, types, "    ") |> list.map((ul) => ul)
-
-  doc_line
-  + ["static ${c_type(ret)} almide_${fname}(${c_params}) {",
-     "    uint8_t buf[4096];",
-     "    size_t pos = 0;"]
-  + pack_lines
-  + ["    uint8_t out[4096];",
-     "    int rlen = bridge_${fname}((const char*)buf, (int)pos, (char*)out, 4096);",
-     "    pos = 0;",
-     "    ${c_type(ret)} _result;"]
-  + unpack_lines
-  + ["    return _result;",
-     "}",
-     ""]
+local fn gen_variant_struct(name: String, cases: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "/* ${doc} */"
+  ]
+  else [];
+  let tag_lines = cases |> list.enumerate |> list.map((entry) => {
+    let (idx, case) = entry;
+    let cname_upper = string.to_upper(get_str(case, "name"));
+    "    ${name}_${cname_upper} = ${int.to_string(idx)},"
+  });
+  let payload_structs = cases |> list.flat_map((case) => {
+    let cname = get_str(case, "name");
+    match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then {
+        let pfield_lines = get_arr(pl, "fields") |> list.enumerate |> list.map((pe) => {
+          let (pi, pf) = pe;
+          "    ${c_type(pf)} v${int.to_string(pi)};"
+        });
+        ["typedef struct {"] + pfield_lines + [
+          "} ${name}_${cname}_Data;",
+          ""
+        ]
+      } else [],
+      none => [],
+    }
+  });
+  let union_members = cases |> list.flat_map((case) => {
+    let cname = get_str(case, "name");
+    match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then [
+        "        ${name}_${cname}_Data ${cname |> string.to_lower};"
+      ]
+      else [],
+      none => [],
+    }
+  });
+  doc_line + ["typedef enum {"] + tag_lines + [
+    "} ${name}Tag;",
+    ""
+  ] + payload_structs + [
+    "typedef struct {",
+    "    ${name}Tag tag;",
+    "    union {"
+  ] + union_members + [
+    "    } v;",
+    "} ${name};",
+    ""
+  ]
 }
 
 // ── Public API ──
+local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
+  let fname = get_str(f, "name");
+  let params = get_arr(f, "params");
+  let ret = json.get(f, "return") ?? json.null();
+  let doc = get_str(f, "doc");
+  let c_params = params |> list.map((p) => "${c_type(json.get(p, "type") ?? json.null())} ${get_str(p, "name")}") |> list.join(", ");
+  let doc_line = if doc != "" then [
+    "/* ${doc} */"
+  ]
+  else [];
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "    ") |> list.map((pl) => pl));
+  let unpack_lines = gen_unpack_expr("_result", ret, types, "    ") |> list.map((ul) => ul);
+  doc_line + [
+    "static ${c_type(ret)} almide_${fname}(${c_params}) {",
+    "    uint8_t buf[4096];",
+    "    size_t pos = 0;"
+  ] + pack_lines + [
+    "    uint8_t out[4096];",
+    "    int rlen = bridge_${fname}((const char*)buf, (int)pos, (char*)out, 4096);",
+    "    pos = 0;",
+    "    ${c_type(ret)} _result;"
+  ] + unpack_lines + ["    return _result;", "}", ""]
+}
 
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
-  let module_name = get_str(iface, "module")
-  let types = get_arr(iface, "types")
-  let functions = get_arr(iface, "functions")
-  let header_guard = string.to_upper(module_name) + "_H"
-
-  let header = """
-    /* Auto-generated by almide-bridge */
-    #ifndef ${header_guard}
-    #define ${header_guard}
-
-    #include <stdint.h>
-    #include <stddef.h>
-    #include <string.h>
-
-    """
-  let bridge_decls = functions |> list.map((f) =>
-    "extern int bridge_${get_str(f, "name")}(const char* args, int args_len, char* out, int out_cap);"
-  )
+  let iface = json.parse(iface_json) ?? json.null();
+  let module_name = get_str(iface, "module");
+  let types = get_arr(iface, "types");
+  let functions = get_arr(iface, "functions");
+  let header_guard = string.to_upper(module_name) + "_H";
+  let header = "/* Auto-generated by almide-bridge */\n#ifndef ${header_guard}\n#define ${header_guard}\n\n#include <stdint.h>\n#include <stddef.h>\n#include <string.h>\n";
+  let bridge_decls = functions |> list.map((f) => "extern int bridge_${get_str(f, "name")}(const char* args, int args_len, char* out, int out_cap);");
   let bridge_footer = [
     "extern void* bridge_alloc(int size);",
     "extern void bridge_free(void* ptr, int size);",
-    "",
-  ]
-  let ser_helpers = """
-    /* ── Serialization helpers ── */
-
-    static inline void almide_pack_i64(uint8_t* buf, size_t* pos, int64_t v) {
-        for (int i = 7; i >= 0; i--) buf[(*pos)++] = (uint8_t)(v >> (i * 8));
-    }
-    static inline void almide_pack_f64(uint8_t* buf, size_t* pos, double v) {
-        uint64_t bits; memcpy(&bits, &v, 8);
-        for (int i = 7; i >= 0; i--) buf[(*pos)++] = (uint8_t)(bits >> (i * 8));
-    }
-    static inline void almide_pack_u32(uint8_t* buf, size_t* pos, uint32_t v) {
-        for (int i = 3; i >= 0; i--) buf[(*pos)++] = (uint8_t)(v >> (i * 8));
-    }
-    static inline void almide_pack_str(uint8_t* buf, size_t* pos, const char* s) {
-        uint32_t len = (uint32_t)strlen(s);
-        almide_pack_u32(buf, pos, len);
-        memcpy(buf + *pos, s, len); *pos += len;
-    }
-    static inline int64_t almide_unpack_i64(const uint8_t* buf, size_t* pos) {
-        int64_t v = 0;
-        for (int i = 0; i < 8; i++) v = (v << 8) | buf[(*pos)++];
-        return v;
-    }
-    static inline double almide_unpack_f64(const uint8_t* buf, size_t* pos) {
-        uint64_t bits = 0;
-        for (int i = 0; i < 8; i++) bits = (bits << 8) | buf[(*pos)++];
-        double v; memcpy(&v, &bits, 8); return v;
-    }
-    static inline const char* almide_unpack_str(const uint8_t* buf, size_t* pos) {
-        uint32_t len = 0;
-        for (int i = 0; i < 4; i++) len = (len << 8) | buf[(*pos)++];
-        /* WARNING: returns pointer into buf, copy if needed */
-        const char* s = (const char*)(buf + *pos); *pos += len;
-        return s;
-    }
-
-    """
+    ""
+  ];
+  let ser_helpers = "/* ── Serialization helpers ── */\n\nstatic inline void almide_pack_i64(uint8_t* buf, size_t* pos, int64_t v) {\n    for (int i = 7; i >= 0; i--) buf[(*pos)++] = (uint8_t)(v >> (i * 8));\n}\nstatic inline void almide_pack_f64(uint8_t* buf, size_t* pos, double v) {\n    uint64_t bits; memcpy(&bits, &v, 8);\n    for (int i = 7; i >= 0; i--) buf[(*pos)++] = (uint8_t)(bits >> (i * 8));\n}\nstatic inline void almide_pack_u32(uint8_t* buf, size_t* pos, uint32_t v) {\n    for (int i = 3; i >= 0; i--) buf[(*pos)++] = (uint8_t)(v >> (i * 8));\n}\nstatic inline void almide_pack_str(uint8_t* buf, size_t* pos, const char* s) {\n    uint32_t len = (uint32_t)strlen(s);\n    almide_pack_u32(buf, pos, len);\n    memcpy(buf + *pos, s, len); *pos += len;\n}\nstatic inline int64_t almide_unpack_i64(const uint8_t* buf, size_t* pos) {\n    int64_t v = 0;\n    for (int i = 0; i < 8; i++) v = (v << 8) | buf[(*pos)++];\n    return v;\n}\nstatic inline double almide_unpack_f64(const uint8_t* buf, size_t* pos) {\n    uint64_t bits = 0;\n    for (int i = 0; i < 8; i++) bits = (bits << 8) | buf[(*pos)++];\n    double v; memcpy(&v, &bits, 8); return v;\n}\nstatic inline const char* almide_unpack_str(const uint8_t* buf, size_t* pos) {\n    uint32_t len = 0;\n    for (int i = 0; i < 4; i++) len = (len << 8) | buf[(*pos)++];\n    /* WARNING: returns pointer into buf, copy if needed */\n    const char* s = (const char*)(buf + *pos); *pos += len;\n    return s;\n}\n";
   let type_defs = types |> list.flat_map((t) => {
-    let name = get_str(t, "name")
-    let kind = json.get(t, "kind") ?? json.null()
+    let name = get_str(t, "name");
+    let kind = json.get(t, "kind") ?? json.null();
     match get_kind(kind) {
-      "record"  => gen_record_struct(name, get_arr(kind, "fields"), t),
+      "record" => gen_record_struct(name, get_arr(kind, "fields"), t),
       "variant" => gen_variant_struct(name, get_arr(kind, "cases"), t),
-      _         => [],
+      _ => [],
     }
-  })
-  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types))
-
-  ([header] + bridge_decls + bridge_footer + [ser_helpers] + type_defs + fn_defs + ["#endif /* ${header_guard} */"]) |> list.join("\n")
+  });
+  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types));
+  ([header] + bridge_decls + bridge_footer + [ser_helpers] + type_defs + fn_defs + [
+    "#endif /* ${header_guard} */"
+  ]) |> list.join("\n")
 }

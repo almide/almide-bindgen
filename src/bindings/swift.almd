@@ -5,292 +5,267 @@
 // Produces a .swift file using C header import for FFI and Data for serialization.
 import json
 import self as bindgen
+import json
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)
+
 local fn get_arr(v: Value, key: String) -> List[Value] = bindgen.get_arr(v, key)
+
 local fn get_kind(v: Value) -> String = bindgen.get_kind(v)
+
 local fn get_type(v: Value) -> Value = bindgen.get_type(v)
+
 local fn find_type_def(name: String, types: List[Value]) -> Value = bindgen.find_type_def(name, types)
+
 local fn is_record(name: String, types: List[Value]) -> Bool = bindgen.is_record(name, types)
-local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Swift type mapping ──
-
-local fn swift_type(ty: Value) -> String =
-  match get_kind(ty) {
-    "float"  => "Double",
-    "int"    => "Int64",
-    "string" => "String",
-    "bool"   => "Bool",
-    "named"  => get_str(ty, "name"),
-    "option" => "${swift_type(json.get(ty, "inner") ?? json.null())}?",
-    "list"   => "[${swift_type(json.get(ty, "inner") ?? json.null())}]",
-    _        => "Any",
-  }
+local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Pack code generation ──
-
-local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["${indent}writeInt64(&buf, ${expr})"],
-    "float"  => ["${indent}writeFloat64(&buf, ${expr})"],
-    "bool"   => ["${indent}buf.append(${expr} ? 1 : 0)"],
-    "string" => [
-      "${indent}writeString(&buf, ${expr})",
-      "${indent}}",
-    ],
-    "named" => gen_pack_named(expr, ty, types, indent),
-    _ => ["${indent}// unknown pack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types, indent))
-  }
-  else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
-  else ["${indent}// unknown named type: ${name}"]
+local fn swift_type(ty: Value) -> String = match get_kind(ty) {
+  "float" => "Double",
+  "int" => "Int64",
+  "string" => "String",
+  "bool" => "Bool",
+  "named" => get_str(ty, "name"),
+  "option" => "${swift_type(json.get(ty, "inner") ?? json.null())}?",
+  "list" => "[${swift_type(json.get(ty, "inner") ?? json.null())}]",
+  _ => "Any",
 }
 
-local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
-  ["${indent}switch ${expr} {"]
-  + (cases
-    |> list.enumerate
-    |> list.flat_map((entry) => {
-      let (idx, case) = entry
-      let cname = get_str(case, "name")
-      match json.get(case, "payload") {
-        some(pl) => if get_kind(pl) == "tuple" then {
-          let pfields = get_arr(pl, "fields")
-          let bind_names = pfields
-            |> list.enumerate
-            |> list.map((pe) => {
-              let (bi, _) = pe
-              "_p${int.to_string(bi)}"
-            })
-          let binds = bind_names |> list.map((b) => "let ${b}") |> list.join(", ")
-          let payload_lines = pfields
-            |> list.enumerate
-            |> list.flat_map((pe) => {
-              let (pi, pf) = pe
-              gen_pack_expr("_p${int.to_string(pi)}", pf, types, indent + "    ")
-            })
-          ["${indent}case .${cname |> string.to_lower}(${binds}):",
-           "${indent}    writeUInt32(&buf, ${int.to_string(idx)})"]
-          + payload_lines
-        } else [
-          "${indent}case .${cname |> string.to_lower}:",
-          "${indent}    writeUInt32(&buf, ${int.to_string(idx)})",
-        ],
-        none => [
-          "${indent}case .${cname |> string.to_lower}:",
-          "${indent}    do {",
-          "${indent}        var _tag = UInt32(${int.to_string(idx)}).bigEndian",
-          "${indent}        buf.append(Data(bytes: &_tag, count: 4))",
-          "${indent}    }",
-        ],
-      }
-    }))
-  + ["${indent}}"]
+local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}writeInt64(&buf, ${expr})"
+  ],
+  "float" => [
+    "${indent}writeFloat64(&buf, ${expr})"
+  ],
+  "bool" => [
+    "${indent}buf.append(${expr} ? 1 : 0)"
+  ],
+  "string" => [
+    "${indent}writeString(&buf, ${expr})",
+    "${indent}}"
+  ],
+  "named" => gen_pack_named(expr, ty, types, indent),
+  _ => [
+    "${indent}// unknown pack type: ${get_kind(ty)}"
+  ],
+}
+
+local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types, indent))
+  } else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
+  else [
+    "${indent}// unknown named type: ${name}"
+  ]
 }
 
 // ── Unpack code generation ──
+local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
+  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases");
+  [
+    "${indent}switch ${expr} {"
+  ] + (cases |> list.enumerate |> list.flat_map((entry) => {
+    let (idx, case) = entry;
+    let cname = get_str(case, "name");
+    match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then {
+        let pfields = get_arr(pl, "fields");
+        let bind_names = pfields |> list.enumerate |> list.map((pe) => {
+          let (bi, _) = pe;
+          "_p${int.to_string(bi)}"
+        });
+        let binds = bind_names |> list.map((b) => "let ${b}") |> list.join(", ");
+        let payload_lines = pfields |> list.enumerate |> list.flat_map((pe) => {
+          let (pi, pf) = pe;
+          gen_pack_expr("_p${int.to_string(pi)}", pf, types, indent + "    ")
+        });
+        [
+          "${indent}case .${cname |> string.to_lower}(${binds}):",
+          "${indent}    writeUInt32(&buf, ${int.to_string(idx)})"
+        ] + payload_lines
+      } else [
+        "${indent}case .${cname |> string.to_lower}:",
+        "${indent}    writeUInt32(&buf, ${int.to_string(idx)})"
+      ],
+      none => [
+        "${indent}case .${cname |> string.to_lower}:",
+        "${indent}    do {",
+        "${indent}        var _tag = UInt32(${int.to_string(idx)}).bigEndian",
+        "${indent}        buf.append(Data(bytes: &_tag, count: 4))",
+        "${indent}    }"
+      ],
+    }
+  })) + [
+    "${indent}}"
+  ]
+}
 
-local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["${indent}let _v = readInt64(_rbuf, &_pos)"],
-    "float"  => ["${indent}let _v = readFloat64(_rbuf, &_pos)"],
-    "bool"   => ["${indent}let _v = _rbuf[_pos] != 0; _pos += 1"],
-    "string" => ["${indent}let _v = readString(_rbuf, &_pos)"],
-    "named" => gen_unpack_named(ty, types, indent),
-    _ => ["${indent}// unknown unpack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    let unpack_lines = fields |> list.flat_map((f) => {
-      let fname = get_str(f, "name")
-      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
-    })
-    let ctor_args = fields |> list.map((f2) => "${get_str(f2, "name")}: _f_${get_str(f2, "name")}") |> list.join(", ")
-    unpack_lines + ["${indent}let _v = ${name}(${ctor_args})"]
-  } else ["${indent}// unknown named type: ${name}"]
+local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}let _v = readInt64(_rbuf, &_pos)"
+  ],
+  "float" => [
+    "${indent}let _v = readFloat64(_rbuf, &_pos)"
+  ],
+  "bool" => [
+    "${indent}let _v = _rbuf[_pos] != 0; _pos += 1"
+  ],
+  "string" => [
+    "${indent}let _v = readString(_rbuf, &_pos)"
+  ],
+  "named" => gen_unpack_named(ty, types, indent),
+  _ => [
+    "${indent}// unknown unpack type: ${get_kind(ty)}"
+  ],
 }
 
 // ── Generate record struct ──
-
-local fn gen_record_struct(name: String, fields: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["/// ${doc}"] else []
-  let field_lines = fields |> list.map((f) =>
-    "    public let ${get_str(f, "name")}: ${swift_type(get_type(f))}"
-  )
-  let desc_parts = fields |> list.map((f) => "${get_str(f, "name")}: \\(${get_str(f, "name")})") |> list.join(", ")
-
-  doc_line
-  + ["public struct ${name}: Equatable, CustomStringConvertible {"]
-  + field_lines
-  + ["",
-     "    public var description: String {",
-     "        \"${name}(${desc_parts})\"",
-     "    }",
-     "}",
-     ""]
+local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    let unpack_lines = fields |> list.flat_map((f) => {
+      let fname = get_str(f, "name");
+      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
+    });
+    let ctor_args = fields |> list.map((f2) => "${get_str(f2, "name")}: _f_${get_str(f2, "name")}") |> list.join(", ");
+    unpack_lines + [
+      "${indent}let _v = ${name}(${ctor_args})"
+    ]
+  } else [
+    "${indent}// unknown named type: ${name}"
+  ]
 }
 
 // ── Generate variant enum ──
-
-local fn gen_variant_enum(name: String, cases: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["/// ${doc}"] else []
-  let case_lines = cases |> list.flat_map((case) => {
-    let cname = get_str(case, "name")
-    match json.get(case, "payload") {
-      some(pl) => if get_kind(pl) == "tuple" then {
-        let ptypes = get_arr(pl, "fields") |> list.map((pf) => swift_type(pf)) |> list.join(", ")
-        ["    case ${cname |> string.to_lower}(${ptypes})"]
-      } else ["    case ${cname |> string.to_lower}"],
-      none => ["    case ${cname |> string.to_lower}"],
-    }
-  })
-  let desc_cases = cases |> list.flat_map((case) => {
-    let cname = get_str(case, "name")
-    match json.get(case, "payload") {
-      some(pl) => if get_kind(pl) == "tuple" then {
-        let pfields = get_arr(pl, "fields")
-        let bind_names = pfields
-          |> list.enumerate
-          |> list.map((pe) => {
-            let (bi, _) = pe
-            "v${int.to_string(bi)}"
-          })
-        let binds = bind_names |> list.map((b) => "let ${b}") |> list.join(", ")
-        let descs = bind_names |> list.map((b) => "\\(${b})") |> list.join(", ")
-        ["        case .${cname |> string.to_lower}(${binds}): return \"${cname}(${descs})\""]
-      } else ["        case .${cname |> string.to_lower}: return \"${cname}\""],
-      none => ["        case .${cname |> string.to_lower}: return \"${cname}\""],
-    }
-  })
-
-  doc_line
-  + ["public enum ${name}: Equatable, CustomStringConvertible {"]
-  + case_lines
-  + ["",
-     "    public var description: String {",
-     "        switch self {"]
-  + desc_cases
-  + ["        }",
-     "    }",
-     "}",
-     ""]
+local fn gen_record_struct(name: String, fields: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "/// ${doc}"
+  ]
+  else [];
+  let field_lines = fields |> list.map((f) => "    public let ${get_str(f, "name")}: ${swift_type(get_type(f))}");
+  let desc_parts = fields |> list.map((f) => "${get_str(f, "name")}: \\(${get_str(f, "name")})") |> list.join(", ");
+  doc_line + [
+    "public struct ${name}: Equatable, CustomStringConvertible {"
+  ] + field_lines + [
+    "",
+    "    public var description: String {",
+    "        \"${name}(${desc_parts})\"",
+    "    }",
+    "}",
+    ""
+  ]
 }
 
 // ── Generate function wrapper ──
-
-local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
-  let fname = get_str(f, "name")
-  let params = get_arr(f, "params")
-  let ret = json.get(f, "return") ?? json.null()
-  let doc = get_str(f, "doc")
-  let swift_params = params |> list.map((p) => "_ ${get_str(p, "name")}: ${swift_type(json.get(p, "type") ?? json.null())}") |> list.join(", ")
-  let doc_line = if doc != "" then ["    /// ${doc}"] else []
-  let pack_lines = params |> list.flat_map((p) =>
-    gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "        ")
-      |> list.map((pl) => pl)
-  )
-  let unpack_lines = gen_unpack_expr(ret, types, "        ") |> list.map((ul) => ul)
-
-  doc_line
-  + ["    public static func ${fname}(${swift_params}) -> ${swift_type(ret)} {",
-     "        var buf = Data()"]
-  + pack_lines
-  + ["        var _out = Data(count: 4096)",
-     "        let _rlen = buf.withUnsafeBytes { argPtr -> Int32 in",
-     "            _out.withUnsafeMutableBytes { outPtr -> Int32 in",
-     "                bridge_${fname}(",
-     "                    UnsafeMutablePointer(mutating: argPtr.baseAddress!.assumingMemoryBound(to: UInt8.self)),",
-     "                    Int32(buf.count),",
-     "                    outPtr.baseAddress!.assumingMemoryBound(to: UInt8.self),",
-     "                    4096",
-     "                )",
-     "            }",
-     "        }",
-     "        let _rbuf = _out.prefix(Int(_rlen))",
-     "        var _pos = _rbuf.startIndex"]
-  + unpack_lines
-  + ["        return _v",
-     "    }",
-     ""]
+local fn gen_variant_enum(name: String, cases: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "/// ${doc}"
+  ]
+  else [];
+  let case_lines = cases |> list.flat_map((case) => {
+    let cname = get_str(case, "name");
+    match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then {
+        let ptypes = get_arr(pl, "fields") |> list.map((pf) => swift_type(pf)) |> list.join(", ");
+        [
+          "    case ${cname |> string.to_lower}(${ptypes})"
+        ]
+      } else [
+        "    case ${cname |> string.to_lower}"
+      ],
+      none => [
+        "    case ${cname |> string.to_lower}"
+      ],
+    }
+  });
+  let desc_cases = cases |> list.flat_map((case) => {
+    let cname = get_str(case, "name");
+    match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then {
+        let pfields = get_arr(pl, "fields");
+        let bind_names = pfields |> list.enumerate |> list.map((pe) => {
+          let (bi, _) = pe;
+          "v${int.to_string(bi)}"
+        });
+        let binds = bind_names |> list.map((b) => "let ${b}") |> list.join(", ");
+        let descs = bind_names |> list.map((b) => "\\(${b})") |> list.join(", ");
+        [
+          "        case .${cname |> string.to_lower}(${binds}): return \"${cname}(${descs})\""
+        ]
+      } else [
+        "        case .${cname |> string.to_lower}: return \"${cname}\""
+      ],
+      none => [
+        "        case .${cname |> string.to_lower}: return \"${cname}\""
+      ],
+    }
+  });
+  doc_line + [
+    "public enum ${name}: Equatable, CustomStringConvertible {"
+  ] + case_lines + ["", "    public var description: String {", "        switch self {"] + desc_cases + ["        }", "    }", "}", ""]
 }
 
 // ── Public API ──
+local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
+  let fname = get_str(f, "name");
+  let params = get_arr(f, "params");
+  let ret = json.get(f, "return") ?? json.null();
+  let doc = get_str(f, "doc");
+  let swift_params = params |> list.map((p) => "_ ${get_str(p, "name")}: ${swift_type(json.get(p, "type") ?? json.null())}") |> list.join(", ");
+  let doc_line = if doc != "" then [
+    "    /// ${doc}"
+  ]
+  else [];
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "        ") |> list.map((pl) => pl));
+  let unpack_lines = gen_unpack_expr(ret, types, "        ") |> list.map((ul) => ul);
+  doc_line + [
+    "    public static func ${fname}(${swift_params}) -> ${swift_type(ret)} {",
+    "        var buf = Data()"
+  ] + pack_lines + [
+    "        var _out = Data(count: 4096)",
+    "        let _rlen = buf.withUnsafeBytes { argPtr -> Int32 in",
+    "            _out.withUnsafeMutableBytes { outPtr -> Int32 in",
+    "                bridge_${fname}(",
+    "                    UnsafeMutablePointer(mutating: argPtr.baseAddress!.assumingMemoryBound(to: UInt8.self)),",
+    "                    Int32(buf.count),",
+    "                    outPtr.baseAddress!.assumingMemoryBound(to: UInt8.self),",
+    "                    4096",
+    "                )",
+    "            }",
+    "        }",
+    "        let _rbuf = _out.prefix(Int(_rlen))",
+    "        var _pos = _rbuf.startIndex"
+  ] + unpack_lines + ["        return _v", "    }", ""]
+}
 
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
-  let module_name = get_str(iface, "module")
-  let types = get_arr(iface, "types")
-  let functions = get_arr(iface, "functions")
-  let cap_module = string.to_upper(string.slice(module_name, 0, 1)) + string.slice(module_name, 1, string.len(module_name))
-
-  let header = """
-    // Auto-generated by almide-bridge
-    import Foundation
-
-    """
-  let helpers = """
-    fileprivate func writeInt64(_ buf: inout Data, _ value: Int64) {
-        var v = value.bigEndian
-        buf.append(Data(bytes: &v, count: 8))
-    }
-    fileprivate func writeFloat64(_ buf: inout Data, _ value: Double) {
-        var v = value.bitPattern.bigEndian
-        buf.append(Data(bytes: &v, count: 8))
-    }
-    fileprivate func writeUInt32(_ buf: inout Data, _ value: UInt32) {
-        var v = value.bigEndian
-        buf.append(Data(bytes: &v, count: 4))
-    }
-    fileprivate func writeBool(_ buf: inout Data, _ value: Bool) {
-        buf.append(value ? 1 : 0)
-    }
-    fileprivate func writeString(_ buf: inout Data, _ value: String) {
-        let sb = Array(value.utf8)
-        writeUInt32(&buf, UInt32(sb.count))
-        buf.append(contentsOf: sb)
-    }
-    fileprivate func readFloat64(_ data: Data, _ pos: inout Data.Index) -> Double {
-        let bits = data[pos..<pos+8].withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
-        pos += 8
-        return Double(bitPattern: bits)
-    }
-    fileprivate func readInt64(_ data: Data, _ pos: inout Data.Index) -> Int64 {
-        let v = data[pos..<pos+8].withUnsafeBytes { $0.load(as: Int64.self).bigEndian }
-        pos += 8
-        return v
-    }
-    fileprivate func readString(_ data: Data, _ pos: inout Data.Index) -> String {
-        let slen = Int(data[pos..<pos+4].withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
-        pos += 4
-        let s = String(bytes: data[pos..<pos+slen], encoding: .utf8) ?? ""
-        pos += slen
-        return s
-    }
-
-    """
+  let iface = json.parse(iface_json) ?? json.null();
+  let module_name = get_str(iface, "module");
+  let types = get_arr(iface, "types");
+  let functions = get_arr(iface, "functions");
+  let cap_module = string.to_upper(string.slice(module_name, 0, 1)) + string.slice(module_name, 1, string.len(module_name));
+  let header = "// Auto-generated by almide-bridge\nimport Foundation\n";
+  let helpers = 'fileprivate func writeInt64(_ buf: inout Data, _ value: Int64) {\n    var v = value.bigEndian\n    buf.append(Data(bytes: &v, count: 8))\n}\nfileprivate func writeFloat64(_ buf: inout Data, _ value: Double) {\n    var v = value.bitPattern.bigEndian\n    buf.append(Data(bytes: &v, count: 8))\n}\nfileprivate func writeUInt32(_ buf: inout Data, _ value: UInt32) {\n    var v = value.bigEndian\n    buf.append(Data(bytes: &v, count: 4))\n}\nfileprivate func writeBool(_ buf: inout Data, _ value: Bool) {\n    buf.append(value ? 1 : 0)\n}\nfileprivate func writeString(_ buf: inout Data, _ value: String) {\n    let sb = Array(value.utf8)\n    writeUInt32(&buf, UInt32(sb.count))\n    buf.append(contentsOf: sb)\n}\nfileprivate func readFloat64(_ data: Data, _ pos: inout Data.Index) -> Double {\n    let bits = data[pos..<pos+8].withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }\n    pos += 8\n    return Double(bitPattern: bits)\n}\nfileprivate func readInt64(_ data: Data, _ pos: inout Data.Index) -> Int64 {\n    let v = data[pos..<pos+8].withUnsafeBytes { $0.load(as: Int64.self).bigEndian }\n    pos += 8\n    return v\n}\nfileprivate func readString(_ data: Data, _ pos: inout Data.Index) -> String {\n    let slen = Int(data[pos..<pos+4].withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })\n    pos += 4\n    let s = String(bytes: data[pos..<pos+slen], encoding: .utf8) ?? ""\n    pos += slen\n    return s\n}\n';
   let type_defs = types |> list.flat_map((t) => {
-    let name = get_str(t, "name")
-    let kind = json.get(t, "kind") ?? json.null()
+    let name = get_str(t, "name");
+    let kind = json.get(t, "kind") ?? json.null();
     match get_kind(kind) {
-      "record"  => gen_record_struct(name, get_arr(kind, "fields"), t),
+      "record" => gen_record_struct(name, get_arr(kind, "fields"), t),
       "variant" => gen_variant_enum(name, get_arr(kind, "cases"), t),
-      _         => [],
+      _ => [],
     }
-  })
-  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types))
-
-  ([header, helpers] + type_defs + ["public enum ${cap_module} {"] + fn_defs + ["}"]) |> list.join("\n")
+  });
+  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types));
+  ([header, helpers] + type_defs + [
+    "public enum ${cap_module} {"
+  ] + fn_defs + ["}"]) |> list.join("\n")
 }

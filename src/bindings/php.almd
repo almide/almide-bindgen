@@ -5,245 +5,263 @@
 // Produces a .php file using PHP FFI extension (7.4+) for loading the shared library.
 import json
 import self as bindgen
+import json
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)
+
 local fn get_arr(v: Value, key: String) -> List[Value] = bindgen.get_arr(v, key)
+
 local fn get_kind(v: Value) -> String = bindgen.get_kind(v)
+
 local fn get_type(v: Value) -> Value = bindgen.get_type(v)
+
 local fn find_type_def(name: String, types: List[Value]) -> Value = bindgen.find_type_def(name, types)
+
 local fn is_record(name: String, types: List[Value]) -> Bool = bindgen.is_record(name, types)
-local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── PHP type mapping ──
-
-local fn php_type(ty: Value) -> String =
-  match get_kind(ty) {
-    "float"  => "float",
-    "int"    => "int",
-    "string" => "string",
-    "bool"   => "bool",
-    "named"  => get_str(ty, "name"),
-    "option" => "?" + php_type(json.get(ty, "inner") ?? json.null()),
-    "list"   => "array",
-    _        => "mixed",
-  }
+local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Pack code generation ──
-
-local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["${indent}$buf .= self::packI64(${expr});"],
-    "float"  => ["${indent}$buf .= self::packF64(${expr});"],
-    "bool"   => ["${indent}$buf .= chr(${expr} ? 1 : 0);"],
-    "string" => ["${indent}$buf .= self::packStr(${expr});"],
-    "named"  => gen_pack_named(expr, ty, types, indent),
-    _        => ["${indent}// unknown pack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    fields |> list.flat_map((f) => gen_pack_expr("${expr}->${get_str(f, "name")}", get_type(f), types, indent))
-  }
-  else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
-  else ["${indent}// unknown named type: ${name}"]
+local fn php_type(ty: Value) -> String = match get_kind(ty) {
+  "float" => "float",
+  "int" => "int",
+  "string" => "string",
+  "bool" => "bool",
+  "named" => get_str(ty, "name"),
+  "option" => "?" + php_type(json.get(ty, "inner") ?? json.null()),
+  "list" => "array",
+  _ => "mixed",
 }
 
-local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
-  let case_lines = cases
-    |> list.enumerate
-    |> list.flat_map((entry) => {
-      let (idx, case) = entry
-      let cname = get_str(case, "name")
-      let header = [
-        "${indent}    case '${cname}':",
-        "${indent}        $buf .= self::packU32(${int.to_string(idx)});",
-      ]
-      let payload_lines = match json.get(case, "payload") {
-        some(pl) => if get_kind(pl) == "tuple" then
-          get_arr(pl, "fields")
-            |> list.enumerate
-            |> list.flat_map((pe) => {
-              let (pi, pf) = pe
-              gen_pack_expr("${expr}->values[${int.to_string(pi)}]", pf, types, indent + "        ")
-            })
-          else [],
-        none => [],
-      }
-      header + payload_lines + ["${indent}        break;"]
-    })
-  ["${indent}switch (${expr}->tag) {"] + case_lines + ["${indent}}"]
+local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}$buf .= self::packI64(${expr});"
+  ],
+  "float" => [
+    "${indent}$buf .= self::packF64(${expr});"
+  ],
+  "bool" => [
+    "${indent}$buf .= chr(${expr} ? 1 : 0);"
+  ],
+  "string" => [
+    "${indent}$buf .= self::packStr(${expr});"
+  ],
+  "named" => gen_pack_named(expr, ty, types, indent),
+  _ => [
+    "${indent}// unknown pack type: ${get_kind(ty)}"
+  ],
+}
+
+local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    fields |> list.flat_map((f) => gen_pack_expr("${expr}->${get_str(f, "name")}", get_type(f), types, indent))
+  } else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
+  else [
+    "${indent}// unknown named type: ${name}"
+  ]
 }
 
 // ── Unpack code generation ──
+local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
+  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases");
+  let case_lines = cases |> list.enumerate |> list.flat_map((entry) => {
+    let (idx, case) = entry;
+    let cname = get_str(case, "name");
+    let header = [
+      "${indent}    case '${cname}':",
+      "${indent}        $buf .= self::packU32(${int.to_string(idx)});"
+    ];
+    let payload_lines = match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then get_arr(pl, "fields") |> list.enumerate |> list.flat_map((pe) => {
+        let (pi, pf) = pe;
+        gen_pack_expr("${expr}->values[${int.to_string(pi)}]", pf, types, indent + "        ")
+      })
+      else [],
+      none => [],
+    };
+    header + payload_lines + [
+      "${indent}        break;"
+    ]
+  });
+  [
+    "${indent}switch (${expr}->tag) {"
+  ] + case_lines + [
+    "${indent}}"
+  ]
+}
 
-local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["${indent}$_v = self::unpackI64($rbuf, $pos);"],
-    "float"  => ["${indent}$_v = self::unpackF64($rbuf, $pos);"],
-    "bool"   => ["${indent}$_v = ord($rbuf[$pos++]) !== 0;"],
-    "string" => ["${indent}$_v = self::unpackStr($rbuf, $pos);"],
-    "named"  => gen_unpack_named(ty, types, indent),
-    _        => ["${indent}// unknown unpack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    let unpack_lines = fields |> list.flat_map((f) => {
-      let fname = get_str(f, "name")
-      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "$_v", "$_f_${fname}"))
-    })
-    let ctor_args = fields |> list.map((f2) => "'${get_str(f2, "name")}' => $_f_${get_str(f2, "name")}") |> list.join(", ")
-    unpack_lines + ["${indent}$_v = new ${name}(${ctor_args});"]
-  } else ["${indent}// unknown named type: ${name}"]
+local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}$_v = self::unpackI64($rbuf, $pos);"
+  ],
+  "float" => [
+    "${indent}$_v = self::unpackF64($rbuf, $pos);"
+  ],
+  "bool" => [
+    "${indent}$_v = ord($rbuf[$pos++]) !== 0;"
+  ],
+  "string" => [
+    "${indent}$_v = self::unpackStr($rbuf, $pos);"
+  ],
+  "named" => gen_unpack_named(ty, types, indent),
+  _ => [
+    "${indent}// unknown unpack type: ${get_kind(ty)}"
+  ],
 }
 
 // ── Generate record class ──
-
-local fn gen_record_class(name: String, fields: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["/** ${doc} */"] else []
-  let prop_lines = fields |> list.map((f) => {
-    let fname = get_str(f, "name")
-    let ftype = get_type(f)
-    "    public ${php_type(ftype)} $${fname};"
-  })
-  let ctor_params = fields |> list.map((f) => "${php_type(get_type(f))} $${get_str(f, "name")}") |> list.join(", ")
-  let assign_lines = fields |> list.map((f) => {
-    let fname = get_str(f, "name")
-    "        $this->${fname} = $${fname};"
-  })
-  let repr_parts = fields |> list.map((f) => "${get_str(f, "name")}={$this->${get_str(f, "name")}}") |> list.join(", ")
-
-  doc_line
-  + ["class ${name} {"]
-  + prop_lines
-  + ["",
-     "    public function __construct(${ctor_params}) {"]
-  + assign_lines
-  + ["    }",
-     "",
-     "    public function __toString(): string {",
-     "        return \"${name}(${repr_parts})\";",
-     "    }",
-     "}",
-     ""]
+local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    let unpack_lines = fields |> list.flat_map((f) => {
+      let fname = get_str(f, "name");
+      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "$_v", "$_f_${fname}"))
+    });
+    let ctor_args = fields |> list.map((f2) => "'${get_str(f2, "name")}' => $_f_${get_str(f2, "name")}") |> list.join(", ");
+    unpack_lines + [
+      "${indent}$_v = new ${name}(${ctor_args});"
+    ]
+  } else [
+    "${indent}// unknown named type: ${name}"
+  ]
 }
 
 // ── Generate variant class ──
+local fn gen_record_class(name: String, fields: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "/** ${doc} */"
+  ]
+  else [];
+  let prop_lines = fields |> list.map((f) => {
+    let fname = get_str(f, "name");
+    let ftype = get_type(f);
+    "    public ${php_type(ftype)} $${fname};"
+  });
+  let ctor_params = fields |> list.map((f) => "${php_type(get_type(f))} $${get_str(f, "name")}") |> list.join(", ");
+  let assign_lines = fields |> list.map((f) => {
+    let fname = get_str(f, "name");
+    "        $this->${fname} = $${fname};"
+  });
+  let repr_parts = fields |> list.map((f) => "${get_str(f, "name")}={$this->${get_str(f, "name")}}") |> list.join(", ");
+  doc_line + [
+    "class ${name} {"
+  ] + prop_lines + [
+    "",
+    "    public function __construct(${ctor_params}) {"
+  ] + assign_lines + [
+    "    }",
+    "",
+    "    public function __toString(): string {",
+    "        return \"${name}(${repr_parts})\";",
+    "    }",
+    "}",
+    ""
+  ]
+}
 
+// ── Generate function wrapper ──
 local fn gen_variant_class(name: String, cases: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["/** ${doc} */"] else []
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "/** ${doc} */"
+  ]
+  else [];
   let factory_methods = cases |> list.flat_map((case) => {
-    let cname = get_str(case, "name")
+    let cname = get_str(case, "name");
     match json.get(case, "payload") {
       some(pl) => {
-        if get_kind(pl) == "tuple" then
-          match list.len(get_arr(pl, "fields")) {
-            1 => [
-              "    public static function ${cname.to_lower()}(mixed $v): self {",
-              "        return new self('${cname}', $v);",
-              "    }",
-            ],
-            2 => [
-              "    public static function ${cname.to_lower()}(mixed $v0, mixed $v1): self {",
-              "        return new self('${cname}', $v0, $v1);",
-              "    }",
-            ],
-            _ => [],
-          }
-        else []
+        if get_kind(pl) == "tuple" then match list.len(get_arr(pl, "fields")) {
+          1 => [
+            "    public static function ${cname.to_lower()}(mixed $v): self {",
+            "        return new self('${cname}', $v);",
+            "    }"
+          ],
+          2 => [
+            "    public static function ${cname.to_lower()}(mixed $v0, mixed $v1): self {",
+            "        return new self('${cname}', $v0, $v1);",
+            "    }"
+          ],
+          _ => [],
+        } else []
       },
       none => [
         "    public static function ${cname.to_lower()}(): self {",
         "        return new self('${cname}');",
-        "    }",
+        "    }"
       ],
     }
-  })
-
-  doc_line
-  + ["class ${name} {",
-     "    public string $tag;",
-     "    public array $values;",
-     "",
-     "    public function __construct(string $tag, mixed ...$values) {",
-     "        $this->tag = $tag;",
-     "        $this->values = $values;",
-     "    }",
-     ""]
-  + factory_methods
-  + ["",
-     "    public function __toString(): string {",
-     "        $vals = implode(', ', $this->values);",
-     '        return $vals ? "{$this->tag}($vals)" : $this->tag;',
-     "    }",
-     "}",
-     ""]
-}
-
-// ── Generate function wrapper ──
-
-local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
-  let fname = get_str(f, "name")
-  let params = get_arr(f, "params")
-  let ret = json.get(f, "return") ?? json.null()
-  let doc = get_str(f, "doc")
-  let php_params = params |> list.map((p) => "${php_type(json.get(p, "type") ?? json.null())} $${get_str(p, "name")}") |> list.join(", ")
-  let doc_line = if doc != "" then ["    /** ${doc} */"] else []
-  let pack_lines = params |> list.flat_map((p) =>
-    gen_pack_expr("$${get_str(p, "name")}", json.get(p, "type") ?? json.null(), types, "        ")
-  )
-  let unpack_lines = gen_unpack_expr(ret, types, "        ")
-
-  doc_line
-  + ["    public static function ${fname}(${php_params}): ${php_type(ret)} {",
-     "        self::init();",
-     "        $buf = '';"]
-  + pack_lines
-  + ["        $out = FFI::new('char[4096]');",
-     "        $rlen = self::$ffi->bridge_${fname}($buf, strlen($buf), $out, 4096);",
-     "        $rbuf = FFI::string($out, $rlen);",
-     "        $pos = 0;"]
-  + unpack_lines
-  + ["        return $_v;",
-     "    }",
-     ""]
+  });
+  doc_line + [
+    "class ${name} {",
+    "    public string $tag;",
+    "    public array $values;",
+    "",
+    "    public function __construct(string $tag, mixed ...$values) {",
+    "        $this->tag = $tag;",
+    "        $this->values = $values;",
+    "    }",
+    ""
+  ] + factory_methods + [
+    "",
+    "    public function __toString(): string {",
+    "        $vals = implode(', ', $this->values);",
+    '        return $vals ? "{$this->tag}($vals)" : $this->tag;',
+    "    }",
+    "}",
+    ""
+  ]
 }
 
 // ── Main ──
+local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
+  let fname = get_str(f, "name");
+  let params = get_arr(f, "params");
+  let ret = json.get(f, "return") ?? json.null();
+  let doc = get_str(f, "doc");
+  let php_params = params |> list.map((p) => "${php_type(json.get(p, "type") ?? json.null())} $${get_str(p, "name")}") |> list.join(", ");
+  let doc_line = if doc != "" then [
+    "    /** ${doc} */"
+  ]
+  else [];
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr("$${get_str(p, "name")}", json.get(p, "type") ?? json.null(), types, "        "));
+  let unpack_lines = gen_unpack_expr(ret, types, "        ");
+  doc_line + [
+    "    public static function ${fname}(${php_params}): ${php_type(ret)} {",
+    "        self::init();",
+    "        $buf = '';"
+  ] + pack_lines + [
+    "        $out = FFI::new('char[4096]');",
+    "        $rlen = self::$ffi->bridge_${fname}($buf, strlen($buf), $out, 4096);",
+    "        $rbuf = FFI::string($out, $rlen);",
+    "        $pos = 0;"
+  ] + unpack_lines + ["        return $_v;", "    }", ""]
+}
 
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
-  let module_name = get_str(iface, "module")
-  let types = get_arr(iface, "types")
-  let functions = get_arr(iface, "functions")
-  let cap_module = string.to_upper(string.slice(module_name, 0, 1)) + string.slice(module_name, 1, string.len(module_name))
-
-  let header = [
-    "<?php",
-    "// Auto-generated by almide-bridge",
-    "declare(strict_types=1);",
-    "",
-  ]
+  let iface = json.parse(iface_json) ?? json.null();
+  let module_name = get_str(iface, "module");
+  let types = get_arr(iface, "types");
+  let functions = get_arr(iface, "functions");
+  let cap_module = string.to_upper(string.slice(module_name, 0, 1)) + string.slice(module_name, 1, string.len(module_name));
+  let header = ["<?php", "// Auto-generated by almide-bridge", "declare(strict_types=1);", ""];
   let type_defs = types |> list.flat_map((t) => {
-    let name = get_str(t, "name")
-    let kind = json.get(t, "kind") ?? json.null()
+    let name = get_str(t, "name");
+    let kind = json.get(t, "kind") ?? json.null();
     match get_kind(kind) {
-      "record"  => gen_record_class(name, get_arr(kind, "fields"), t),
+      "record" => gen_record_class(name, get_arr(kind, "fields"), t),
       "variant" => gen_variant_class(name, get_arr(kind, "cases"), t),
-      _         => [],
+      _ => [],
     }
-  })
+  });
   let cdef_str = functions |> list.map((f) => {
-    let fname = get_str(f, "name")
+    let fname = get_str(f, "name");
     "int bridge_${fname}(const char* args, int args_len, char* out, int out_cap);"
-  }) |> list.join("\\n")
+  }) |> list.join("\\n");
   let class_header = [
     "class ${cap_module} {",
     "    private static ?\\FFI $ffi = null;",
@@ -272,9 +290,8 @@ fn generate(iface_json: String) -> String = {
     "        $len = unpack('N', $buf, $pos)[1]; $pos += 4;",
     "        $s = substr($buf, $pos, $len); $pos += $len; return $s;",
     "    }",
-    "",
-  ]
-  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types))
-
+    ""
+  ];
+  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types));
   (header + type_defs + class_header + fn_defs + ["}"]) |> list.join("\n")
 }

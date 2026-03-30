@@ -6,187 +6,215 @@
 // plus JSDoc type annotations for TypeScript compatibility.
 import json
 import self as bindgen
+import json
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)
+
 local fn get_arr(v: Value, key: String) -> List[Value] = bindgen.get_arr(v, key)
+
 local fn get_kind(v: Value) -> String = bindgen.get_kind(v)
+
 local fn get_type(v: Value) -> Value = bindgen.get_type(v)
+
 local fn find_type_def(name: String, types: List[Value]) -> Value = bindgen.find_type_def(name, types)
+
 local fn is_record(name: String, types: List[Value]) -> Bool = bindgen.is_record(name, types)
-local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── JavaScript type mapping (JSDoc) ──
-local fn js_type(ty: Value) -> String =
-  match get_kind(ty) {
-    "float"  => "number",
-    "int"    => "number",
-    "string" => "string",
-    "bool"   => "boolean",
-    "named"  => get_str(ty, "name"),
-    "option" => "${js_type(json.get(ty, "inner") ?? json.null())} | null",
-    "list"   => "Array<${js_type(json.get(ty, "inner") ?? json.null())}>",
-    _        => "any",
-  }
+local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Pack code generation ──
-local fn gen_pack_expr(expr: String, ty: Value, types: List[Value]) -> List[String] =
-  match get_kind(ty) {
-    "int"  => ["  _buf.writeBigInt64BE(BigInt(${expr}), _off); _off += 8;"],
-    "float" => ["  _buf.writeDoubleBE(${expr}, _off); _off += 8;"],
-    "bool" => ["  _buf.writeUInt8(${expr} ? 1 : 0, _off); _off += 1;"],
-    "string" => [
-      "  { const _sb = Buffer.from(${expr}, 'utf-8');",
-      "    _buf.writeUInt32BE(_sb.length, _off); _off += 4;",
-      "    _sb.copy(_buf, _off); _off += _sb.length; }",
-    ],
-    "named" => gen_pack_named(expr, ty, types),
-    _ => ["  // unknown pack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_pack_named(expr: String, ty: Value, types: List[Value]) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types))
-  }
-  else if is_variant(name, types) then gen_pack_variant(expr, name, types)
-  else ["  // unknown named type: ${name}"]
+local fn js_type(ty: Value) -> String = match get_kind(ty) {
+  "float" => "number",
+  "int" => "number",
+  "string" => "string",
+  "bool" => "boolean",
+  "named" => get_str(ty, "name"),
+  "option" => "${js_type(json.get(ty, "inner") ?? json.null())} | null",
+  "list" => "Array<${js_type(json.get(ty, "inner") ?? json.null())}>",
+  _ => "any",
 }
 
-local fn gen_pack_variant(expr: String, name: String, types: List[Value]) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
-  let case_lines = cases
-    |> list.enumerate
-    |> list.flat_map((entry) => {
-      let (tag_idx, case) = entry
-      let cname = get_str(case, "name")
-      let cond = if tag_idx == 0 then "if" else "} else if"
-      let header = [
-        "  ${cond} (${expr}.tag === '${cname}') {",
-        "    _buf.writeUInt32BE(${int.to_string(tag_idx)}, _off); _off += 4;",
-      ]
-      let payload_lines = match json.get(case, "payload") {
-        some(pl) => if get_kind(pl) == "tuple" then
-          get_arr(pl, "fields")
-            |> list.enumerate
-            |> list.flat_map((pe) => {
-              let (pi, pf) = pe
-              gen_pack_expr("${expr}.values[${int.to_string(pi)}]", pf, types)
-            })
-          else [],
-        none => [],
-      }
-      header + payload_lines
-    })
-  case_lines + ["  }"]
+local fn gen_pack_expr(expr: String, ty: Value, types: List[Value]) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "  _buf.writeBigInt64BE(BigInt(${expr}), _off); _off += 8;"
+  ],
+  "float" => [
+    "  _buf.writeDoubleBE(${expr}, _off); _off += 8;"
+  ],
+  "bool" => [
+    "  _buf.writeUInt8(${expr} ? 1 : 0, _off); _off += 1;"
+  ],
+  "string" => [
+    "  { const _sb = Buffer.from(${expr}, 'utf-8');",
+    "    _buf.writeUInt32BE(_sb.length, _off); _off += 4;",
+    "    _sb.copy(_buf, _off); _off += _sb.length; }"
+  ],
+  "named" => gen_pack_named(expr, ty, types),
+  _ => [
+    "  // unknown pack type: ${get_kind(ty)}"
+  ],
+}
+
+local fn gen_pack_named(expr: String, ty: Value, types: List[Value]) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types))
+  } else if is_variant(name, types) then gen_pack_variant(expr, name, types)
+  else [
+    "  // unknown named type: ${name}"
+  ]
 }
 
 // ── Unpack code generation ──
-local fn gen_unpack_expr(ty: Value, types: List[Value]) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["  const _v = Number(_rbuf.readBigInt64BE(_pos)); _pos += 8;"],
-    "float"  => ["  const _v = _rbuf.readDoubleBE(_pos); _pos += 8;"],
-    "bool"   => ["  const _v = _rbuf.readUInt8(_pos) !== 0; _pos += 1;"],
-    "string" => [
-      "  const _slen = _rbuf.readUInt32BE(_pos); _pos += 4;",
-      "  const _v = _rbuf.toString('utf-8', _pos, _pos + _slen); _pos += _slen;",
-    ],
-    "named" => gen_unpack_named(ty, types),
-    _ => ["  // unknown unpack type: ${get_kind(ty)}"],
-  }
+local fn gen_pack_variant(expr: String, name: String, types: List[Value]) -> List[String] = {
+  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases");
+  let case_lines = cases |> list.enumerate |> list.flat_map((entry) => {
+    let (tag_idx, case) = entry;
+    let cname = get_str(case, "name");
+    let cond = if tag_idx == 0 then "if" else "} else if";
+    let header = [
+      "  ${cond} (${expr}.tag === '${cname}') {",
+      "    _buf.writeUInt32BE(${int.to_string(tag_idx)}, _off); _off += 4;"
+    ];
+    let payload_lines = match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then get_arr(pl, "fields") |> list.enumerate |> list.flat_map((pe) => {
+        let (pi, pf) = pe;
+        gen_pack_expr("${expr}.values[${int.to_string(pi)}]", pf, types)
+      })
+      else [],
+      none => [],
+    };
+    header + payload_lines
+  });
+  case_lines + ["  }"]
+}
 
-local fn gen_unpack_named(ty: Value, types: List[Value]) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    let unpack_lines = fields |> list.flat_map((f) => {
-      let fname = get_str(f, "name")
-      gen_unpack_expr(get_type(f), types) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
-    })
-    let ctor_args = fields |> list.map((f) => {
-      let n = get_str(f, "name")
-      "${n}: _f_${n}"
-    }) |> list.join(", ")
-    unpack_lines + ["  const _v = { ${ctor_args} };"]
-  } else ["  // unknown named type: ${name}"]
+local fn gen_unpack_expr(ty: Value, types: List[Value]) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "  const _v = Number(_rbuf.readBigInt64BE(_pos)); _pos += 8;"
+  ],
+  "float" => [
+    "  const _v = _rbuf.readDoubleBE(_pos); _pos += 8;"
+  ],
+  "bool" => [
+    "  const _v = _rbuf.readUInt8(_pos) !== 0; _pos += 1;"
+  ],
+  "string" => [
+    "  const _slen = _rbuf.readUInt32BE(_pos); _pos += 4;",
+    "  const _v = _rbuf.toString('utf-8', _pos, _pos + _slen); _pos += _slen;"
+  ],
+  "named" => gen_unpack_named(ty, types),
+  _ => [
+    "  // unknown unpack type: ${get_kind(ty)}"
+  ],
 }
 
 // ── Generate record factory ──
-local fn gen_record_factory(name: String, fields: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["/** ${doc} */"] else []
-  let field_names = fields.map((f) => get_str(f, "name"))
-  let jsdoc_params = fields.map((f) => " * @param {${js_type(get_type(f))}} ${get_str(f, "name")}").join("\n")
-  let params = field_names.join(", ")
-
-  doc_line
-  + ["/**", jsdoc_params, " * @returns {${name}}", " */"]
-  + ["function make${name}(${params}) {"]
-  + ["  return { ${field_names.map((n) => "${n}").join(", ")} };"]
-  + ["}", ""]
+local fn gen_unpack_named(ty: Value, types: List[Value]) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    let unpack_lines = fields |> list.flat_map((f) => {
+      let fname = get_str(f, "name");
+      gen_unpack_expr(get_type(f), types) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
+    });
+    let ctor_args = fields |> list.map((f) => {
+      let n = get_str(f, "name");
+      "${n}: _f_${n}"
+    }) |> list.join(", ");
+    unpack_lines + [
+      "  const _v = { ${ctor_args} };"
+    ]
+  } else [
+    "  // unknown named type: ${name}"
+  ]
 }
 
 // ── Generate variant factory ──
-local fn gen_variant_factory(name: String, cases: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["/** ${doc} */"] else []
-  let case_lines = cases |> list.flat_map((case) => {
-    let cname = get_str(case, "name")
-    let lower_name = cname.to_lower()
-    match json.get(case, "payload") {
-      some(pl) => {
-        if get_kind(pl) == "tuple" then
-          match list.len(get_arr(pl, "fields")) {
-            1 => ["  ${lower_name}(value) { return { tag: '${cname}', values: [value] }; },"],
-            2 => ["  ${lower_name}(v0, v1) { return { tag: '${cname}', values: [v0, v1] }; },"],
-            _ => [],
-          }
-        else []
-      },
-      none => ["  ${lower_name}() { return { tag: '${cname}', values: [] }; },"],
-    }
-  })
-
-  doc_line
-  + ["const ${name} = {"]
-  + case_lines
-  + ["};", ""]
+local fn gen_record_factory(name: String, fields: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "/** ${doc} */"
+  ]
+  else [];
+  let field_names = fields.map((f) => get_str(f, "name"));
+  let jsdoc_params = fields.map((f) => " * @param {${js_type(get_type(f))}} ${get_str(f, "name")}").join("\n");
+  let params = field_names.join(", ");
+  doc_line + [
+    "/**",
+    jsdoc_params,
+    " * @returns {${name}}",
+    " */"
+  ] + [
+    "function make${name}(${params}) {"
+  ] + [
+    "  return { ${field_names.map((n) => "${n}").join(", ")} };"
+  ] + ["}", ""]
 }
 
 // ── Generate function wrapper ──
-local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
-  let fname = get_str(f, "name")
-  let params = get_arr(f, "params")
-  let ret = json.get(f, "return") ?? json.null()
-  let doc = get_str(f, "doc")
-  let js_params = params.map((p) => get_str(p, "name")).join(", ")
-  let doc_line = if doc != "" then ["/** ${doc} */"] else []
-  let jsdoc_params = params.map((p) => "/** @param {${js_type(json.get(p, "type") ?? json.null())}} ${get_str(p, "name")} */")
-  let pack_lines = params |> list.flat_map((p) =>
-    gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types)
-  )
-  let unpack_lines = gen_unpack_expr(ret, types)
-
-  doc_line
-  + jsdoc_params
-  + ["function ${fname}(${js_params}) {"]
-  + ["  const _buf = Buffer.alloc(4096);", "  let _off = 0;"]
-  + pack_lines
-  + ["  const _out = Buffer.alloc(4096);",
-     "  const _rlen = _lib.bridge_${fname}(_buf.slice(0, _off), _off, _out, 4096);",
-     "  const _rbuf = _out.slice(0, _rlen);",
-     "  let _pos = 0;"]
-  + unpack_lines
-  + ["  return _v;", "}", ""]
+local fn gen_variant_factory(name: String, cases: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "/** ${doc} */"
+  ]
+  else [];
+  let case_lines = cases |> list.flat_map((case) => {
+    let cname = get_str(case, "name");
+    let lower_name = cname.to_lower();
+    match json.get(case, "payload") {
+      some(pl) => {
+        if get_kind(pl) == "tuple" then match list.len(get_arr(pl, "fields")) {
+          1 => [
+            "  ${lower_name}(value) { return { tag: '${cname}', values: [value] }; },"
+          ],
+          2 => [
+            "  ${lower_name}(v0, v1) { return { tag: '${cname}', values: [v0, v1] }; },"
+          ],
+          _ => [],
+        } else []
+      },
+      none => [
+        "  ${lower_name}() { return { tag: '${cname}', values: [] }; },"
+      ],
+    }
+  });
+  doc_line + [
+    "const ${name} = {"
+  ] + case_lines + ["};", ""]
 }
 
 // ── Public API ──
-fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
-  let module_name = get_str(iface, "module")
-  let types = get_arr(iface, "types")
-  let functions = get_arr(iface, "functions")
+local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
+  let fname = get_str(f, "name");
+  let params = get_arr(f, "params");
+  let ret = json.get(f, "return") ?? json.null();
+  let doc = get_str(f, "doc");
+  let js_params = params.map((p) => get_str(p, "name")).join(", ");
+  let doc_line = if doc != "" then [
+    "/** ${doc} */"
+  ]
+  else [];
+  let jsdoc_params = params.map((p) => "/** @param {${js_type(json.get(p, "type") ?? json.null())}} ${get_str(p, "name")} */");
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types));
+  let unpack_lines = gen_unpack_expr(ret, types);
+  doc_line + jsdoc_params + [
+    "function ${fname}(${js_params}) {"
+  ] + ["  const _buf = Buffer.alloc(4096);", "  let _off = 0;"] + pack_lines + [
+    "  const _out = Buffer.alloc(4096);",
+    "  const _rlen = _lib.bridge_${fname}(_buf.slice(0, _off), _off, _out, 4096);",
+    "  const _rbuf = _out.slice(0, _rlen);",
+    "  let _pos = 0;"
+  ] + unpack_lines + ["  return _v;", "}", ""]
+}
 
+fn generate(iface_json: String) -> String = {
+  let iface = json.parse(iface_json) ?? json.null();
+  let module_name = get_str(iface, "module");
+  let types = get_arr(iface, "types");
+  let functions = get_arr(iface, "functions");
   let header = [
     "// Auto-generated by almide-bridge",
     "'use strict';",
@@ -196,31 +224,34 @@ fn generate(iface_json: String) -> String = {
     "const { Buffer } = require('buffer');",
     "",
     "const _lib = koffi.load(path.join(__dirname, 'libalmide_${module_name}'));",
-    "",
-  ]
+    ""
+  ];
   let bridge_decls = functions |> list.map((f) => {
-    let fname = get_str(f, "name")
+    let fname = get_str(f, "name");
     "_lib.bridge_${fname} = _lib.func('int bridge_${fname}(const char*, int, char*, int)');"
-  })
+  });
   let type_defs = types |> list.flat_map((t) => {
-    let name = get_str(t, "name")
-    let kind = json.get(t, "kind") ?? json.null()
+    let name = get_str(t, "name");
+    let kind = json.get(t, "kind") ?? json.null();
     match get_kind(kind) {
-      "record"  => gen_record_factory(name, get_arr(kind, "fields"), t),
+      "record" => gen_record_factory(name, get_arr(kind, "fields"), t),
       "variant" => gen_variant_factory(name, get_arr(kind, "cases"), t),
-      _         => [],
+      _ => [],
     }
-  })
-  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types))
+  });
+  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types));
   let exports = types |> list.flat_map((t) => {
-    let name = get_str(t, "name")
-    let kind = json.get(t, "kind") ?? json.null()
+    let name = get_str(t, "name");
+    let kind = json.get(t, "kind") ?? json.null();
     match get_kind(kind) {
-      "record"  => ["make${name}"],
+      "record" => [
+        "make${name}"
+      ],
       "variant" => [name],
-      _         => [],
+      _ => [],
     }
-  }) + functions.map((f) => get_str(f, "name"))
-
-  (header + bridge_decls + [""] + type_defs + fn_defs + ["module.exports = { ${exports.join(", ")} };"]) |> list.join("\n")
+  }) + functions.map((f) => get_str(f, "name"));
+  (header + bridge_decls + [""] + type_defs + fn_defs + [
+    "module.exports = { ${exports.join(", ")} };"
+  ]) |> list.join("\n")
 }

@@ -5,303 +5,277 @@
 // Produces a .java file using JNA for FFI and ByteBuffer for serialization.
 import json
 import self as bindgen
+import json
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)
+
 local fn get_arr(v: Value, key: String) -> List[Value] = bindgen.get_arr(v, key)
+
 local fn get_kind(v: Value) -> String = bindgen.get_kind(v)
+
 local fn get_type(v: Value) -> Value = bindgen.get_type(v)
+
 local fn find_type_def(name: String, types: List[Value]) -> Value = bindgen.find_type_def(name, types)
+
 local fn is_record(name: String, types: List[Value]) -> Bool = bindgen.is_record(name, types)
-local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Java type mapping ──
+local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
-local fn java_type(ty: Value) -> String =
-  match get_kind(ty) {
-    "float"  => "double",
-    "int"    => "long",
-    "string" => "String",
-    "bool"   => "boolean",
-    "named"  => get_str(ty, "name"),
-    "option" => java_type(json.get(ty, "inner") ?? json.null()),
-    "list"   => "java.util.List<${java_boxed(json.get(ty, "inner") ?? json.null())}>",
-    _        => "Object",
-  }
-
-local fn java_boxed(ty: Value) -> String =
-  match get_kind(ty) {
-    "float" => "Double",
-    "int"   => "Long",
-    "bool"  => "Boolean",
-    _       => java_type(ty),
-  }
-
-// ── Pack code generation ──
-
-local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["${indent}writeInt64(buf, ${expr});"],
-    "float"  => ["${indent}writeFloat64(buf, ${expr});"],
-    "bool"   => ["${indent}buf.put((byte)(${expr} ? 1 : 0));"],
-    "string" => ["${indent}writeString(buf, ${expr});"],
-    "named"  => gen_pack_named(expr, ty, types, indent),
-    _        => ["${indent}// unknown pack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types, indent))
-  }
-  else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
-  else ["${indent}// unknown named type: ${name}"]
+local fn java_type(ty: Value) -> String = match get_kind(ty) {
+  "float" => "double",
+  "int" => "long",
+  "string" => "String",
+  "bool" => "boolean",
+  "named" => get_str(ty, "name"),
+  "option" => java_type(json.get(ty, "inner") ?? json.null()),
+  "list" => "java.util.List<${java_boxed(json.get(ty, "inner") ?? json.null())}>",
+  _ => "Object",
 }
 
-local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
-  let case_lines = cases
-    |> list.enumerate
-    |> list.flat_map((entry) => {
-      let (idx, case) = entry
-      let cname = get_str(case, "name")
-      let cond = if idx == 0 then "if" else "} else if"
-      let header = [
-        "${indent}${cond} (${expr} instanceof ${cname}) {",
-        "${indent}    writeUInt32(buf, ${int.to_string(idx)});",
-      ]
-      let payload_lines = match json.get(case, "payload") {
-        some(pl) => if get_kind(pl) == "tuple" then
-          get_arr(pl, "fields")
-            |> list.enumerate
-            |> list.flat_map((pe) => {
-              let (pi, pf) = pe
-              gen_pack_expr("((${cname})${expr}).v${int.to_string(pi)}", pf, types, indent + "    ")
-            })
-          else [],
-        none => [],
-      }
-      header + payload_lines
-    })
-  case_lines + ["${indent}}"]
+// ── Pack code generation ──
+local fn java_boxed(ty: Value) -> String = match get_kind(ty) {
+  "float" => "Double",
+  "int" => "Long",
+  "bool" => "Boolean",
+  _ => java_type(ty),
+}
+
+local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}writeInt64(buf, ${expr});"
+  ],
+  "float" => [
+    "${indent}writeFloat64(buf, ${expr});"
+  ],
+  "bool" => [
+    "${indent}buf.put((byte)(${expr} ? 1 : 0));"
+  ],
+  "string" => [
+    "${indent}writeString(buf, ${expr});"
+  ],
+  "named" => gen_pack_named(expr, ty, types, indent),
+  _ => [
+    "${indent}// unknown pack type: ${get_kind(ty)}"
+  ],
+}
+
+local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types, indent))
+  } else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
+  else [
+    "${indent}// unknown named type: ${name}"
+  ]
 }
 
 // ── Unpack code generation ──
+local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
+  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases");
+  let case_lines = cases |> list.enumerate |> list.flat_map((entry) => {
+    let (idx, case) = entry;
+    let cname = get_str(case, "name");
+    let cond = if idx == 0 then "if" else "} else if";
+    let header = [
+      "${indent}${cond} (${expr} instanceof ${cname}) {",
+      "${indent}    writeUInt32(buf, ${int.to_string(idx)});"
+    ];
+    let payload_lines = match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then get_arr(pl, "fields") |> list.enumerate |> list.flat_map((pe) => {
+        let (pi, pf) = pe;
+        gen_pack_expr("((${cname})${expr}).v${int.to_string(pi)}", pf, types, indent + "    ")
+      })
+      else [],
+      none => [],
+    };
+    header + payload_lines
+  });
+  case_lines + [
+    "${indent}}"
+  ]
+}
 
-local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["${indent}long _v = readInt64(buf);"],
-    "float"  => ["${indent}double _v = readFloat64(buf);"],
-    "bool"   => ["${indent}boolean _v = buf.get() != 0;"],
-    "string" => ["${indent}String _v = readString(buf);"],
-    "named"  => gen_unpack_named(ty, types, indent),
-    _        => ["${indent}// unknown unpack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    let unpack_lines = fields |> list.flat_map((f) => {
-      let fname = get_str(f, "name")
-      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
-    })
-    let ctor_args = fields |> list.map((f2) => "_f_${get_str(f2, "name")}") |> list.join(", ")
-    unpack_lines + ["${indent}${name} _v = new ${name}(${ctor_args});"]
-  } else ["${indent}// unknown named type: ${name}"]
+local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}long _v = readInt64(buf);"
+  ],
+  "float" => [
+    "${indent}double _v = readFloat64(buf);"
+  ],
+  "bool" => [
+    "${indent}boolean _v = buf.get() != 0;"
+  ],
+  "string" => [
+    "${indent}String _v = readString(buf);"
+  ],
+  "named" => gen_unpack_named(ty, types, indent),
+  _ => [
+    "${indent}// unknown unpack type: ${get_kind(ty)}"
+  ],
 }
 
 // ── Generate record class ──
-
-local fn gen_record_class(name: String, fields: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["    /** ${doc} */"] else []
-  let field_decls = fields |> list.map((f) => "        public final ${java_type(get_type(f))} ${get_str(f, "name")};")
-  let ctor_params = fields |> list.map((f) => "${java_type(get_type(f))} ${get_str(f, "name")}") |> list.join(", ")
-  let ctor_body = fields |> list.map((f) => "            this.${get_str(f, "name")} = ${get_str(f, "name")};")
-  let repr_parts = fields |> list.map((f) => "${get_str(f, "name")}=\" + ${get_str(f, "name")} + \"") |> list.join(", ")
-  let eq_parts = fields |> list.map((f) => {
-    let fname = get_str(f, "name")
-    let fkind = get_kind(get_type(f))
-    match fkind {
-      "float"  => "Double.compare(${fname}, o.${fname}) == 0",
-      "string" => "${fname}.equals(o.${fname})",
-      _        => "${fname} == o.${fname}",
-    }
-  }) |> list.join(" && ")
-  let hash_parts = fields |> list.map((f) => {
-    let fname = get_str(f, "name")
-    match get_kind(get_type(f)) {
-      "float" => "Double.hashCode(${fname})",
-      "int"   => "Long.hashCode(${fname})",
-      "bool"  => "Boolean.hashCode(${fname})",
-      _       => "${fname}.hashCode()",
-    }
-  }) |> list.join(", ")
-
-  doc_line
-  + ["    public static class ${name} {"]
-  + field_decls
-  + ["",
-     "        public ${name}(${ctor_params}) {"]
-  + ctor_body
-  + ["        }",
-     "",
-     "        @Override public String toString() { return \"${name}(${repr_parts})\"; }",
-     "        @Override public boolean equals(Object other) {",
-     "            if (!(other instanceof ${name})) return false;",
-     "            ${name} o = (${name}) other;",
-     "            return ${eq_parts};",
-     "        }",
-     "        @Override public int hashCode() { return java.util.Objects.hash(${hash_parts}); }",
-     "    }",
-     ""]
+local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    let unpack_lines = fields |> list.flat_map((f) => {
+      let fname = get_str(f, "name");
+      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
+    });
+    let ctor_args = fields |> list.map((f2) => "_f_${get_str(f2, "name")}") |> list.join(", ");
+    unpack_lines + [
+      "${indent}${name} _v = new ${name}(${ctor_args});"
+    ]
+  } else [
+    "${indent}// unknown named type: ${name}"
+  ]
 }
 
 // ── Generate variant class ──
+local fn gen_record_class(name: String, fields: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "    /** ${doc} */"
+  ]
+  else [];
+  let field_decls = fields |> list.map((f) => "        public final ${java_type(get_type(f))} ${get_str(f, "name")};");
+  let ctor_params = fields |> list.map((f) => "${java_type(get_type(f))} ${get_str(f, "name")}") |> list.join(", ");
+  let ctor_body = fields |> list.map((f) => "            this.${get_str(f, "name")} = ${get_str(f, "name")};");
+  let repr_parts = fields |> list.map((f) => "${get_str(f, "name")}=\" + ${get_str(f, "name")} + \"") |> list.join(", ");
+  let eq_parts = fields |> list.map((f) => {
+    let fname = get_str(f, "name");
+    let fkind = get_kind(get_type(f));
+    match fkind {
+      "float" => "Double.compare(${fname}, o.${fname}) == 0",
+      "string" => "${fname}.equals(o.${fname})",
+      _ => "${fname} == o.${fname}",
+    }
+  }) |> list.join(" && ");
+  let hash_parts = fields |> list.map((f) => {
+    let fname = get_str(f, "name");
+    match get_kind(get_type(f)) {
+      "float" => "Double.hashCode(${fname})",
+      "int" => "Long.hashCode(${fname})",
+      "bool" => "Boolean.hashCode(${fname})",
+      _ => "${fname}.hashCode()",
+    }
+  }) |> list.join(", ");
+  doc_line + [
+    "    public static class ${name} {"
+  ] + field_decls + [
+    "",
+    "        public ${name}(${ctor_params}) {"
+  ] + ctor_body + [
+    "        }",
+    "",
+    "        @Override public String toString() { return \"${name}(${repr_parts})\"; }",
+    "        @Override public boolean equals(Object other) {",
+    "            if (!(other instanceof ${name})) return false;",
+    "            ${name} o = (${name}) other;",
+    "            return ${eq_parts};",
+    "        }",
+    "        @Override public int hashCode() { return java.util.Objects.hash(${hash_parts}); }",
+    "    }",
+    ""
+  ]
+}
 
+// ── Generate function wrapper ──
 local fn gen_variant_class(name: String, cases: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["    /** ${doc} */"] else []
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "    /** ${doc} */"
+  ]
+  else [];
   let case_lines = cases |> list.flat_map((case) => {
-    let cname = get_str(case, "name")
+    let cname = get_str(case, "name");
     match json.get(case, "payload") {
       some(pl) => {
         if get_kind(pl) == "tuple" then {
-          let pfields = get_arr(pl, "fields")
-          let field_decls = pfields
-            |> list.enumerate
-            |> list.map((e) => {
-              let (pi, pf) = e
-              "        public final ${java_type(pf)} v${int.to_string(pi)};"
-            })
-          let ctor_params = pfields
-            |> list.enumerate
-            |> list.map((e) => {
-              let (pi, pf) = e
-              "${java_type(pf)} v${int.to_string(pi)}"
-            })
-            |> list.join(", ")
-          let ctor_body = pfields
-            |> list.enumerate
-            |> list.map((e) => {
-              let (pi, _pf) = e
-              "            this.v${int.to_string(pi)} = v${int.to_string(pi)};"
-            })
-          ["    public static class ${cname} extends ${name} {"]
-          + field_decls
-          + ["        public ${cname}(${ctor_params}) {"]
-          + ctor_body
-          + ["        }",
-             "    }",
-             ""]
+          let pfields = get_arr(pl, "fields");
+          let field_decls = pfields |> list.enumerate |> list.map((e) => {
+            let (pi, pf) = e;
+            "        public final ${java_type(pf)} v${int.to_string(pi)};"
+          });
+          let ctor_params = pfields |> list.enumerate |> list.map((e) => {
+            let (pi, pf) = e;
+            "${java_type(pf)} v${int.to_string(pi)}"
+          }) |> list.join(", ");
+          let ctor_body = pfields |> list.enumerate |> list.map((e) => {
+            let (pi, _pf) = e;
+            "            this.v${int.to_string(pi)} = v${int.to_string(pi)};"
+          });
+          [
+            "    public static class ${cname} extends ${name} {"
+          ] + field_decls + [
+            "        public ${cname}(${ctor_params}) {"
+          ] + ctor_body + ["        }", "    }", ""]
         } else [
           "    public static class ${cname} extends ${name} { }",
-          "",
+          ""
         ]
       },
       none => [
         "    public static class ${cname} extends ${name} { }",
-        "",
+        ""
       ],
     }
-  })
-
-  doc_line
-  + ["    public static abstract class ${name} { }",
-     ""]
-  + case_lines
-}
-
-// ── Generate function wrapper ──
-
-local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
-  let fname = get_str(f, "name")
-  let params = get_arr(f, "params")
-  let ret = json.get(f, "return") ?? json.null()
-  let doc = get_str(f, "doc")
-  let j_params = params |> list.map((p) => "${java_type(json.get(p, "type") ?? json.null())} ${get_str(p, "name")}") |> list.join(", ")
-  let doc_line = if doc != "" then ["    /** ${doc} */"] else []
-  let pack_lines = params |> list.flat_map((p) =>
-    gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "        ")
-  )
-  let unpack_lines = gen_unpack_expr(ret, types, "        ")
-
-  doc_line
-  + ["    public static ${java_type(ret)} ${fname}(${j_params}) {",
-     "        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(4096);",
-     "        buf.order(java.nio.ByteOrder.BIG_ENDIAN);"]
-  + pack_lines
-  + ["        byte[] argsBytes = new byte[buf.position()];",
-     "        buf.flip();",
-     "        buf.get(argsBytes);",
-     "        byte[] outBuf = new byte[4096];",
-     "        int rlen = LIB.bridge_${fname}(argsBytes, argsBytes.length, outBuf, 4096);",
-     "        buf = java.nio.ByteBuffer.wrap(outBuf, 0, rlen);",
-     "        buf.order(java.nio.ByteOrder.BIG_ENDIAN);"]
-  + unpack_lines
-  + ["        return _v;",
-     "    }",
-     ""]
+  });
+  doc_line + [
+    "    public static abstract class ${name} { }",
+    ""
+  ] + case_lines
 }
 
 // ── Main ──
+local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
+  let fname = get_str(f, "name");
+  let params = get_arr(f, "params");
+  let ret = json.get(f, "return") ?? json.null();
+  let doc = get_str(f, "doc");
+  let j_params = params |> list.map((p) => "${java_type(json.get(p, "type") ?? json.null())} ${get_str(p, "name")}") |> list.join(", ");
+  let doc_line = if doc != "" then [
+    "    /** ${doc} */"
+  ]
+  else [];
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "        "));
+  let unpack_lines = gen_unpack_expr(ret, types, "        ");
+  doc_line + [
+    "    public static ${java_type(ret)} ${fname}(${j_params}) {",
+    "        java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(4096);",
+    "        buf.order(java.nio.ByteOrder.BIG_ENDIAN);"
+  ] + pack_lines + [
+    "        byte[] argsBytes = new byte[buf.position()];",
+    "        buf.flip();",
+    "        buf.get(argsBytes);",
+    "        byte[] outBuf = new byte[4096];",
+    "        int rlen = LIB.bridge_${fname}(argsBytes, argsBytes.length, outBuf, 4096);",
+    "        buf = java.nio.ByteBuffer.wrap(outBuf, 0, rlen);",
+    "        buf.order(java.nio.ByteOrder.BIG_ENDIAN);"
+  ] + unpack_lines + ["        return _v;", "    }", ""]
+}
 
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
-  let module_name = get_str(iface, "module")
-  let types = get_arr(iface, "types")
-  let functions = get_arr(iface, "functions")
-  let cap_module = string.to_upper(string.slice(module_name, 0, 1)) + string.slice(module_name, 1, string.len(module_name))
-
-  let header = """
-    // Auto-generated by almide-bridge
-    package almide.${module_name};
-
-    import com.sun.jna.Library;
-    import com.sun.jna.Native;
-
-    public class ${cap_module} {
-
-        private static void writeInt64(java.nio.ByteBuffer buf, long v) { buf.putLong(v); }
-        private static void writeFloat64(java.nio.ByteBuffer buf, double v) { buf.putDouble(v); }
-        private static void writeUInt32(java.nio.ByteBuffer buf, int v) { buf.putInt(v); }
-        private static void writeString(java.nio.ByteBuffer buf, String s) {
-            byte[] bytes = s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            buf.putInt(bytes.length);
-            buf.put(bytes);
-        }
-        private static long readInt64(java.nio.ByteBuffer buf) { return buf.getLong(); }
-        private static double readFloat64(java.nio.ByteBuffer buf) { return buf.getDouble(); }
-        private static String readString(java.nio.ByteBuffer buf) {
-            int len = buf.getInt();
-            byte[] bytes = new byte[len];
-            buf.get(bytes);
-            return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-        }
-
-    """
-  let jna_iface_methods = functions |> list.map((f) =>
-    "        int bridge_${get_str(f, "name")}(byte[] args, int argsLen, byte[] out, int outCap);"
-  ) |> list.join("\n")
-  let jna_iface = """
-        private interface BridgeLib extends Library {
-    ${jna_iface_methods}
-        }
-
-        private static final BridgeLib LIB = Native.load("almide_${module_name}", BridgeLib.class);
-
-    """
+  let iface = json.parse(iface_json) ?? json.null();
+  let module_name = get_str(iface, "module");
+  let types = get_arr(iface, "types");
+  let functions = get_arr(iface, "functions");
+  let cap_module = string.to_upper(string.slice(module_name, 0, 1)) + string.slice(module_name, 1, string.len(module_name));
+  let header = "// Auto-generated by almide-bridge\npackage almide.${module_name};\n\nimport com.sun.jna.Library;\nimport com.sun.jna.Native;\n\npublic class ${cap_module} {\n\n    private static void writeInt64(java.nio.ByteBuffer buf, long v) { buf.putLong(v); }\n    private static void writeFloat64(java.nio.ByteBuffer buf, double v) { buf.putDouble(v); }\n    private static void writeUInt32(java.nio.ByteBuffer buf, int v) { buf.putInt(v); }\n    private static void writeString(java.nio.ByteBuffer buf, String s) {\n        byte[] bytes = s.getBytes(java.nio.charset.StandardCharsets.UTF_8);\n        buf.putInt(bytes.length);\n        buf.put(bytes);\n    }\n    private static long readInt64(java.nio.ByteBuffer buf) { return buf.getLong(); }\n    private static double readFloat64(java.nio.ByteBuffer buf) { return buf.getDouble(); }\n    private static String readString(java.nio.ByteBuffer buf) {\n        int len = buf.getInt();\n        byte[] bytes = new byte[len];\n        buf.get(bytes);\n        return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);\n    }\n";
+  let jna_iface_methods = functions |> list.map((f) => "        int bridge_${get_str(f, "name")}(byte[] args, int argsLen, byte[] out, int outCap);") |> list.join("\n");
+  let jna_iface = "    private interface BridgeLib extends Library {\n${jna_iface_methods}\n    }\n\n    private static final BridgeLib LIB = Native.load(\"almide_${module_name}\", BridgeLib.class);\n";
   let type_defs = types |> list.flat_map((t) => {
-    let name = get_str(t, "name")
-    let kind = json.get(t, "kind") ?? json.null()
+    let name = get_str(t, "name");
+    let kind = json.get(t, "kind") ?? json.null();
     match get_kind(kind) {
-      "record"  => gen_record_class(name, get_arr(kind, "fields"), t),
+      "record" => gen_record_class(name, get_arr(kind, "fields"), t),
       "variant" => gen_variant_class(name, get_arr(kind, "cases"), t),
-      _         => [],
+      _ => [],
     }
-  })
-  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types))
-
+  });
+  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types));
   header + jna_iface + (type_defs + fn_defs + ["}"]) |> list.join("\n")
 }

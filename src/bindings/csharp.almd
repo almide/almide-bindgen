@@ -5,306 +5,254 @@
 // Produces a .cs file using P/Invoke for FFI and manual big-endian serialization.
 import json
 import self as bindgen
+import json
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)
+
 local fn get_arr(v: Value, key: String) -> List[Value] = bindgen.get_arr(v, key)
+
 local fn get_kind(v: Value) -> String = bindgen.get_kind(v)
+
 local fn get_type(v: Value) -> Value = bindgen.get_type(v)
+
 local fn find_type_def(name: String, types: List[Value]) -> Value = bindgen.find_type_def(name, types)
+
 local fn is_record(name: String, types: List[Value]) -> Bool = bindgen.is_record(name, types)
-local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── C# type mapping ──
-
-local fn cs_type(ty: Value) -> String =
-  match get_kind(ty) {
-    "float"  => "double",
-    "int"    => "long",
-    "string" => "string",
-    "bool"   => "bool",
-    "named"  => get_str(ty, "name"),
-    "option" => "${cs_type(json.get(ty, "inner") ?? json.null())}?",
-    "list"   => "List<${cs_type(json.get(ty, "inner") ?? json.null())}>",
-    _        => "object",
-  }
+local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Big-endian helper method names ──
-
-local fn be_write_method(ty: Value) -> String =
-  match get_kind(ty) {
-    "int"    => "WriteInt64BE",
-    "float"  => "WriteFloat64BE",
-    "bool"   => "WriteBoolBE",
-    "string" => "WriteStringBE",
-    _        => "",
-  }
-
-// ── Pack code generation ──
-
-local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["${indent}WriteInt64BE(ms, ${expr});"],
-    "float"  => ["${indent}WriteFloat64BE(ms, ${expr});"],
-    "bool"   => ["${indent}ms.WriteByte(${expr} ? (byte)1 : (byte)0);"],
-    "string" => [
-      "${indent}{",
-      "${indent}    var _sb = System.Text.Encoding.UTF8.GetBytes(${expr});",
-      "${indent}    WriteUInt32BE(ms, (uint)_sb.Length);",
-      "${indent}    ms.Write(_sb, 0, _sb.Length);",
-      "${indent}}",
-    ],
-    "named" => gen_pack_named(expr, ty, types, indent),
-    _       => ["${indent}// unknown pack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    fields |> list.flat_map((f) => {
-      let fname = get_str(f, "name")
-      let cap_name = string.to_upper(string.slice(fname, 0, 1)) + string.slice(fname, 1, string.len(fname))
-      gen_pack_expr("${expr}.${cap_name}", get_type(f), types, indent)
-    })
-  }
-  else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
-  else ["${indent}// unknown named type: ${name}"]
+local fn cs_type(ty: Value) -> String = match get_kind(ty) {
+  "float" => "double",
+  "int" => "long",
+  "string" => "string",
+  "bool" => "bool",
+  "named" => get_str(ty, "name"),
+  "option" => "${cs_type(json.get(ty, "inner") ?? json.null())}?",
+  "list" => "List<${cs_type(json.get(ty, "inner") ?? json.null())}>",
+  _ => "object",
 }
 
-local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
-  cases
-    |> list.enumerate
-    |> list.flat_map((entry) => {
-      let (idx, case) = entry
-      let cname = get_str(case, "name")
-      let cond = if idx == 0 then "if" else "else if"
-      let header = [
-        "${indent}${cond} (${expr} is ${cname} _vc${int.to_string(idx)})",
-        "${indent}{",
-        "${indent}    WriteUInt32BE(ms, ${int.to_string(idx)});",
-      ]
-      let payload_lines = match json.get(case, "payload") {
-        some(pl) => if get_kind(pl) == "tuple" then
-          get_arr(pl, "fields")
-            |> list.enumerate
-            |> list.flat_map((pe) => {
-              let (pi, pf) = pe
-              gen_pack_expr("_vc${int.to_string(idx)}.V${int.to_string(pi)}", pf, types, indent + "    ")
-            })
-          else [],
-        none => [],
-      }
-      header + payload_lines + ["${indent}}"]
+// ── Pack code generation ──
+local fn be_write_method(ty: Value) -> String = match get_kind(ty) {
+  "int" => "WriteInt64BE",
+  "float" => "WriteFloat64BE",
+  "bool" => "WriteBoolBE",
+  "string" => "WriteStringBE",
+  _ => "",
+}
+
+local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}WriteInt64BE(ms, ${expr});"
+  ],
+  "float" => [
+    "${indent}WriteFloat64BE(ms, ${expr});"
+  ],
+  "bool" => [
+    "${indent}ms.WriteByte(${expr} ? (byte)1 : (byte)0);"
+  ],
+  "string" => [
+    "${indent}{",
+    "${indent}    var _sb = System.Text.Encoding.UTF8.GetBytes(${expr});",
+    "${indent}    WriteUInt32BE(ms, (uint)_sb.Length);",
+    "${indent}    ms.Write(_sb, 0, _sb.Length);",
+    "${indent}}"
+  ],
+  "named" => gen_pack_named(expr, ty, types, indent),
+  _ => [
+    "${indent}// unknown pack type: ${get_kind(ty)}"
+  ],
+}
+
+local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    fields |> list.flat_map((f) => {
+      let fname = get_str(f, "name");
+      let cap_name = string.to_upper(string.slice(fname, 0, 1)) + string.slice(fname, 1, string.len(fname));
+      gen_pack_expr("${expr}.${cap_name}", get_type(f), types, indent)
     })
+  } else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
+  else [
+    "${indent}// unknown named type: ${name}"
+  ]
 }
 
 // ── Unpack code generation ──
+local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
+  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases");
+  cases |> list.enumerate |> list.flat_map((entry) => {
+    let (idx, case) = entry;
+    let cname = get_str(case, "name");
+    let cond = if idx == 0 then "if" else "else if";
+    let header = [
+      "${indent}${cond} (${expr} is ${cname} _vc${int.to_string(idx)})",
+      "${indent}{",
+      "${indent}    WriteUInt32BE(ms, ${int.to_string(idx)});"
+    ];
+    let payload_lines = match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then get_arr(pl, "fields") |> list.enumerate |> list.flat_map((pe) => {
+        let (pi, pf) = pe;
+        gen_pack_expr("_vc${int.to_string(idx)}.V${int.to_string(pi)}", pf, types, indent + "    ")
+      })
+      else [],
+      none => [],
+    };
+    header + payload_lines + [
+      "${indent}}"
+    ]
+  })
+}
 
-local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["${indent}var _v = ReadInt64BE(buf, ref pos);"],
-    "float"  => ["${indent}var _v = ReadFloat64BE(buf, ref pos);"],
-    "bool"   => ["${indent}var _v = buf[pos++] != 0;"],
-    "string" => [
-      "${indent}var _slen = (int)ReadUInt32BE(buf, ref pos);",
-      "${indent}var _v = System.Text.Encoding.UTF8.GetString(buf, pos, _slen); pos += _slen;",
-    ],
-    "named" => gen_unpack_named(ty, types, indent),
-    _       => ["${indent}object _v = null; // unknown unpack type"],
-  }
-
-local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    let unpack_lines = fields |> list.flat_map((f) => {
-      let fname = get_str(f, "name")
-      let cap_name = string.to_upper(string.slice(fname, 0, 1)) + string.slice(fname, 1, string.len(fname))
-      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
-    })
-    let ctor_args = fields |> list.map((f2) => "${get_str(f2, "name")}: _f_${get_str(f2, "name")}") |> list.join(", ")
-    unpack_lines + ["${indent}var _v = new ${name}(${ctor_args});"]
-  } else ["${indent}${cs_type(ty)} _v = null; // unknown named type"]
+local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}var _v = ReadInt64BE(buf, ref pos);"
+  ],
+  "float" => [
+    "${indent}var _v = ReadFloat64BE(buf, ref pos);"
+  ],
+  "bool" => [
+    "${indent}var _v = buf[pos++] != 0;"
+  ],
+  "string" => [
+    "${indent}var _slen = (int)ReadUInt32BE(buf, ref pos);",
+    "${indent}var _v = System.Text.Encoding.UTF8.GetString(buf, pos, _slen); pos += _slen;"
+  ],
+  "named" => gen_unpack_named(ty, types, indent),
+  _ => [
+    "${indent}object _v = null; // unknown unpack type"
+  ],
 }
 
 // ── Generate record class ──
-
-local fn gen_record_class(name: String, fields: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["    /// <summary>${doc}</summary>"] else []
-  let ctor_params = fields |> list.map((f) => "${cs_type(get_type(f))} ${get_str(f, "name")}") |> list.join(", ")
-  let prop_lines = fields |> list.map((f) => {
-    let fname = get_str(f, "name")
-    let cap_name = string.to_upper(string.slice(fname, 0, 1)) + string.slice(fname, 1, string.len(fname))
-    "        public ${cs_type(get_type(f))} ${cap_name} => ${fname};"
-  })
-  doc_line
-  + ["    public record ${name}(${ctor_params})",
-     "    {"]
-  + prop_lines
-  + ["    }",
-     ""]
+local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    let unpack_lines = fields |> list.flat_map((f) => {
+      let fname = get_str(f, "name");
+      let cap_name = string.to_upper(string.slice(fname, 0, 1)) + string.slice(fname, 1, string.len(fname));
+      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
+    });
+    let ctor_args = fields |> list.map((f2) => "${get_str(f2, "name")}: _f_${get_str(f2, "name")}") |> list.join(", ");
+    unpack_lines + [
+      "${indent}var _v = new ${name}(${ctor_args});"
+    ]
+  } else [
+    "${indent}${cs_type(ty)} _v = null; // unknown named type"
+  ]
 }
 
 // ── Generate variant class ──
+local fn gen_record_class(name: String, fields: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "    /// <summary>${doc}</summary>"
+  ]
+  else [];
+  let ctor_params = fields |> list.map((f) => "${cs_type(get_type(f))} ${get_str(f, "name")}") |> list.join(", ");
+  let prop_lines = fields |> list.map((f) => {
+    let fname = get_str(f, "name");
+    let cap_name = string.to_upper(string.slice(fname, 0, 1)) + string.slice(fname, 1, string.len(fname));
+    "        public ${cs_type(get_type(f))} ${cap_name} => ${fname};"
+  });
+  doc_line + [
+    "    public record ${name}(${ctor_params})",
+    "    {"
+  ] + prop_lines + ["    }", ""]
+}
 
+// ── Generate function wrapper ──
 local fn gen_variant_class(name: String, cases: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["    /// <summary>${doc}</summary>"] else []
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "    /// <summary>${doc}</summary>"
+  ]
+  else [];
   let case_lines = cases |> list.map((case) => {
-    let cname = get_str(case, "name")
+    let cname = get_str(case, "name");
     match json.get(case, "payload") {
       some(pl) => {
         if get_kind(pl) == "tuple" then {
-          let params = get_arr(pl, "fields")
-            |> list.enumerate
-            |> list.map((e) => {
-              let (pi, pf) = e
-              "${cs_type(pf)} V${int.to_string(pi)}"
-            })
-            |> list.join(", ")
+          let params = get_arr(pl, "fields") |> list.enumerate |> list.map((e) => {
+            let (pi, pf) = e;
+            "${cs_type(pf)} V${int.to_string(pi)}"
+          }) |> list.join(", ");
           "    public record ${cname}(${params}) : ${name};"
         } else "    public record ${cname}() : ${name};"
       },
       none => "    public record ${cname}() : ${name};",
     }
-  })
-  doc_line
-  + ["    public abstract record ${name};",
-     ""]
-  + case_lines
-  + [""]
-}
-
-// ── Generate function wrapper ──
-
-local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
-  let fname = get_str(f, "name")
-  let params = get_arr(f, "params")
-  let ret = json.get(f, "return") ?? json.null()
-  let doc = get_str(f, "doc")
-  let cap_fname = string.to_upper(string.slice(fname, 0, 1)) + string.slice(fname, 1, string.len(fname))
-  let cs_params = params |> list.map((p) => "${cs_type(json.get(p, "type") ?? json.null())} ${get_str(p, "name")}") |> list.join(", ")
-  let doc_line = if doc != "" then ["        /// <summary>${doc}</summary>"] else []
-  let pack_lines = params |> list.flat_map((p) =>
-    gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "            ")
-  )
-  let unpack_lines = gen_unpack_expr(ret, types, "            ")
-
-  doc_line
-  + ["        public static ${cs_type(ret)} ${cap_fname}(${cs_params})",
-     "        {",
-     "            using var ms = new System.IO.MemoryStream();"]
-  + pack_lines
-  + ["            var args = ms.ToArray();",
-     "            var outBuf = new byte[4096];",
-     "            int rlen;",
-     "            unsafe",
-     "            {",
-     "                fixed (byte* ap = args, op = outBuf)",
-     "                {",
-     "                    rlen = bridge_${fname}((IntPtr)ap, args.Length, (IntPtr)op, 4096);",
-     "                }",
-     "            }",
-     "            var buf = outBuf;",
-     "            var pos = 0;"]
-  + unpack_lines
-  + ["            return _v;",
-     "        }",
-     ""]
+  });
+  doc_line + [
+    "    public abstract record ${name};",
+    ""
+  ] + case_lines + [""]
 }
 
 // ── Main ──
+local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
+  let fname = get_str(f, "name");
+  let params = get_arr(f, "params");
+  let ret = json.get(f, "return") ?? json.null();
+  let doc = get_str(f, "doc");
+  let cap_fname = string.to_upper(string.slice(fname, 0, 1)) + string.slice(fname, 1, string.len(fname));
+  let cs_params = params |> list.map((p) => "${cs_type(json.get(p, "type") ?? json.null())} ${get_str(p, "name")}") |> list.join(", ");
+  let doc_line = if doc != "" then [
+    "        /// <summary>${doc}</summary>"
+  ]
+  else [];
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "            "));
+  let unpack_lines = gen_unpack_expr(ret, types, "            ");
+  doc_line + [
+    "        public static ${cs_type(ret)} ${cap_fname}(${cs_params})",
+    "        {",
+    "            using var ms = new System.IO.MemoryStream();"
+  ] + pack_lines + [
+    "            var args = ms.ToArray();",
+    "            var outBuf = new byte[4096];",
+    "            int rlen;",
+    "            unsafe",
+    "            {",
+    "                fixed (byte* ap = args, op = outBuf)",
+    "                {",
+    "                    rlen = bridge_${fname}((IntPtr)ap, args.Length, (IntPtr)op, 4096);",
+    "                }",
+    "            }",
+    "            var buf = outBuf;",
+    "            var pos = 0;"
+  ] + unpack_lines + ["            return _v;", "        }", ""]
+}
 
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
-  let module_name = get_str(iface, "module")
-  let types = get_arr(iface, "types")
-  let functions = get_arr(iface, "functions")
-  let cap_module = string.to_upper(string.slice(module_name, 0, 1)) + string.slice(module_name, 1, string.len(module_name))
-
-  let header = """
-    // Auto-generated by almide-bridge
-    using System;
-    using System.Runtime.InteropServices;
-
-    namespace Almide.${cap_module}
-    {
-    """
+  let iface = json.parse(iface_json) ?? json.null();
+  let module_name = get_str(iface, "module");
+  let types = get_arr(iface, "types");
+  let functions = get_arr(iface, "functions");
+  let cap_module = string.to_upper(string.slice(module_name, 0, 1)) + string.slice(module_name, 1, string.len(module_name));
+  let header = "// Auto-generated by almide-bridge\nusing System;\nusing System.Runtime.InteropServices;\n\nnamespace Almide.${cap_module}\n{";
   let type_defs = types |> list.flat_map((t) => {
-    let name = get_str(t, "name")
-    let kind = json.get(t, "kind") ?? json.null()
+    let name = get_str(t, "name");
+    let kind = json.get(t, "kind") ?? json.null();
     match get_kind(kind) {
-      "record"  => gen_record_class(name, get_arr(kind, "fields"), t),
+      "record" => gen_record_class(name, get_arr(kind, "fields"), t),
       "variant" => gen_variant_class(name, get_arr(kind, "cases"), t),
-      _         => [],
+      _ => [],
     }
-  })
-  let bridge_header = """
-        public static unsafe class Bridge
-        {
-            private const string LibName = "almide_${module_name}";
-
-    """
+  });
+  let bridge_header = "public static unsafe class Bridge\n{\n    private const string LibName = \"almide_${module_name}\";\n";
   let dll_imports = functions |> list.flat_map((f) => {
-    let fname = get_str(f, "name")
+    let fname = get_str(f, "name");
     [
       "        [DllImport(LibName, EntryPoint = \"bridge_${fname}\")]",
       "        private static extern int bridge_${fname}(IntPtr args, int argsLen, IntPtr outBuf, int outCap);",
-      "",
+      ""
     ]
-  })
-  let be_helpers = """
-            // ── Big-endian helpers ──
-
-            private static void WriteInt64BE(System.IO.MemoryStream ms, long v)
-            {
-                var b = BitConverter.GetBytes(v);
-                if (BitConverter.IsLittleEndian) Array.Reverse(b);
-                ms.Write(b, 0, 8);
-            }
-
-            private static void WriteFloat64BE(System.IO.MemoryStream ms, double v)
-            {
-                var b = BitConverter.GetBytes(v);
-                if (BitConverter.IsLittleEndian) Array.Reverse(b);
-                ms.Write(b, 0, 8);
-            }
-
-            private static void WriteUInt32BE(System.IO.MemoryStream ms, uint v)
-            {
-                var b = BitConverter.GetBytes(v);
-                if (BitConverter.IsLittleEndian) Array.Reverse(b);
-                ms.Write(b, 0, 4);
-            }
-
-            private static long ReadInt64BE(byte[] buf, ref int pos)
-            {
-                var b = new byte[8];
-                Array.Copy(buf, pos, b, 0, 8); pos += 8;
-                if (BitConverter.IsLittleEndian) Array.Reverse(b);
-                return BitConverter.ToInt64(b, 0);
-            }
-
-            private static double ReadFloat64BE(byte[] buf, ref int pos)
-            {
-                var b = new byte[8];
-                Array.Copy(buf, pos, b, 0, 8); pos += 8;
-                if (BitConverter.IsLittleEndian) Array.Reverse(b);
-                return BitConverter.ToDouble(b, 0);
-            }
-
-            private static uint ReadUInt32BE(byte[] buf, ref int pos)
-            {
-                var b = new byte[4];
-                Array.Copy(buf, pos, b, 0, 4); pos += 4;
-                if (BitConverter.IsLittleEndian) Array.Reverse(b);
-                return BitConverter.ToUInt32(b, 0);
-            }
-
-    """
-  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types))
-
+  });
+  let be_helpers = "// ── Big-endian helpers ──\n\nprivate static void WriteInt64BE(System.IO.MemoryStream ms, long v)\n{\n    var b = BitConverter.GetBytes(v);\n    if (BitConverter.IsLittleEndian) Array.Reverse(b);\n    ms.Write(b, 0, 8);\n}\n\nprivate static void WriteFloat64BE(System.IO.MemoryStream ms, double v)\n{\n    var b = BitConverter.GetBytes(v);\n    if (BitConverter.IsLittleEndian) Array.Reverse(b);\n    ms.Write(b, 0, 8);\n}\n\nprivate static void WriteUInt32BE(System.IO.MemoryStream ms, uint v)\n{\n    var b = BitConverter.GetBytes(v);\n    if (BitConverter.IsLittleEndian) Array.Reverse(b);\n    ms.Write(b, 0, 4);\n}\n\nprivate static long ReadInt64BE(byte[] buf, ref int pos)\n{\n    var b = new byte[8];\n    Array.Copy(buf, pos, b, 0, 8); pos += 8;\n    if (BitConverter.IsLittleEndian) Array.Reverse(b);\n    return BitConverter.ToInt64(b, 0);\n}\n\nprivate static double ReadFloat64BE(byte[] buf, ref int pos)\n{\n    var b = new byte[8];\n    Array.Copy(buf, pos, b, 0, 8); pos += 8;\n    if (BitConverter.IsLittleEndian) Array.Reverse(b);\n    return BitConverter.ToDouble(b, 0);\n}\n\nprivate static uint ReadUInt32BE(byte[] buf, ref int pos)\n{\n    var b = new byte[4];\n    Array.Copy(buf, pos, b, 0, 4); pos += 4;\n    if (BitConverter.IsLittleEndian) Array.Reverse(b);\n    return BitConverter.ToUInt32(b, 0);\n}\n";
+  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types));
   header + (type_defs |> list.join("\n")) + "\n" + bridge_header + (dll_imports |> list.join("\n")) + "\n" + be_helpers + (fn_defs + ["    }", "}"]) |> list.join("\n")
 }

@@ -4,223 +4,226 @@ import json
 import self as bindgen
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)
+
 local fn get_arr(v: Value, key: String) -> List[Value] = bindgen.get_arr(v, key)
+
 local fn get_kind(v: Value) -> String = bindgen.get_kind(v)
+
 local fn get_type(v: Value) -> Value = bindgen.get_type(v)
+
 local fn find_type_def(name: String, types: List[Value]) -> Value = bindgen.find_type_def(name, types)
+
 local fn is_record(name: String, types: List[Value]) -> Bool = bindgen.is_record(name, types)
-local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Python type hints ──
-
-local fn py_type(ty: Value) -> String =
-  match get_kind(ty) {
-    "float"  => "float",
-    "int"    => "int",
-    "string" => "str",
-    "bool"   => "bool",
-    "named"  => get_str(ty, "name"),
-    "option" => "${py_type(json.get(ty, "inner") ?? json.null())} | None",
-    "list"   => "list[${py_type(json.get(ty, "inner") ?? json.null())}]",
-    _        => "Any",
-  }
+local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Pack code generation ──
-
-local fn gen_pack_expr(expr: String, ty: Value, types: List[Value]) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["buf += struct.pack('>q', ${expr})"],
-    "float"  => ["buf += struct.pack('>d', ${expr})"],
-    "bool"   => ["buf += struct.pack('B', 1 if ${expr} else 0)"],
-    "string" => [
-      "_sb = ${expr}.encode('utf-8')",
-      "buf += struct.pack('>I', len(_sb)) + _sb",
-    ],
-    "named" => gen_pack_named(expr, ty, types),
-    _ => ["# unknown pack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_pack_named(expr: String, ty: Value, types: List[Value]) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types))
-  }
-  else if is_variant(name, types) then gen_pack_variant(expr, name, types)
-  else ["# unknown named type: ${name}"]
+local fn py_type(ty: Value) -> String = match get_kind(ty) {
+  "float" => "float",
+  "int" => "int",
+  "string" => "str",
+  "bool" => "bool",
+  "named" => get_str(ty, "name"),
+  "option" => "${py_type(json.get(ty, "inner") ?? json.null())} | None",
+  "list" => "list[${py_type(json.get(ty, "inner") ?? json.null())}]",
+  _ => "Any",
 }
 
-local fn gen_pack_variant(expr: String, name: String, types: List[Value]) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
-  cases
-    |> list.enumerate
-    |> list.flat_map((entry) => {
-      let (idx, case) = entry
-      let cname = get_str(case, "name")
-      let cond = if idx == 0 then "if" else "elif"
-      let header = [
-        "${cond} ${expr}.tag == '${cname}':",
-        "    buf += struct.pack('>I', ${int.to_string(idx)})",
-      ]
-      let payload_lines = match json.get(case, "payload") {
-        some(pl) => if get_kind(pl) == "tuple" then
-          get_arr(pl, "fields")
-            |> list.enumerate
-            |> list.flat_map((pe) => {
-              let (pi, pf) = pe
-              gen_pack_expr("${expr}.values[${int.to_string(pi)}]", pf, types)
-                |> list.map((l) => "    " + l)
-            })
-          else [],
-        none => [],
-      }
-      header + payload_lines
-    })
+local fn gen_pack_expr(expr: String, ty: Value, types: List[Value]) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "buf += struct.pack('>q', ${expr})"
+  ],
+  "float" => [
+    "buf += struct.pack('>d', ${expr})"
+  ],
+  "bool" => [
+    "buf += struct.pack('B', 1 if ${expr} else 0)"
+  ],
+  "string" => [
+    "_sb = ${expr}.encode('utf-8')",
+    "buf += struct.pack('>I', len(_sb)) + _sb"
+  ],
+  "named" => gen_pack_named(expr, ty, types),
+  _ => [
+    "# unknown pack type: ${get_kind(ty)}"
+  ],
+}
+
+local fn gen_pack_named(expr: String, ty: Value, types: List[Value]) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types))
+  } else if is_variant(name, types) then gen_pack_variant(expr, name, types)
+  else [
+    "# unknown named type: ${name}"
+  ]
 }
 
 // ── Unpack code generation ──
+local fn gen_pack_variant(expr: String, name: String, types: List[Value]) -> List[String] = {
+  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases");
+  cases |> list.enumerate |> list.flat_map((entry) => {
+    let (idx, case) = entry;
+    let cname = get_str(case, "name");
+    let cond = if idx == 0 then "if" else "elif";
+    let header = [
+      "${cond} ${expr}.tag == '${cname}':",
+      "    buf += struct.pack('>I', ${int.to_string(idx)})"
+    ];
+    let payload_lines = match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then get_arr(pl, "fields") |> list.enumerate |> list.flat_map((pe) => {
+        let (pi, pf) = pe;
+        gen_pack_expr("${expr}.values[${int.to_string(pi)}]", pf, types) |> list.map((l) => "    " + l)
+      })
+      else [],
+      none => [],
+    };
+    header + payload_lines
+  })
+}
 
-local fn gen_unpack_expr(ty: Value, types: List[Value]) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["_v, = struct.unpack_from('>q', _rbuf, _pos); _pos += 8"],
-    "float"  => ["_v, = struct.unpack_from('>d', _rbuf, _pos); _pos += 8"],
-    "bool"   => ["_v = _rbuf[_pos] != 0; _pos += 1"],
-    "string" => [
-      "_slen, = struct.unpack_from('>I', _rbuf, _pos); _pos += 4",
-      "_v = _rbuf[_pos:_pos+_slen].decode('utf-8'); _pos += _slen",
-    ],
-    "named" => gen_unpack_named(ty, types),
-    _ => ["_v = None  # unknown unpack type"],
-  }
-
-local fn gen_unpack_named(ty: Value, types: List[Value]) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    let unpack_lines = fields |> list.flat_map((f) => {
-      let fname = get_str(f, "name")
-      gen_unpack_expr(get_type(f), types) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
-    })
-    let ctor_args = fields |> list.map((f) => {
-      let n = get_str(f, "name")
-      "${n}=_f_${n}"
-    }) |> list.join(", ")
-    unpack_lines + ["_v = ${name}(${ctor_args})"]
-  } else ["_v = None  # unknown named type"]
+local fn gen_unpack_expr(ty: Value, types: List[Value]) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "_v, = struct.unpack_from('>q', _rbuf, _pos); _pos += 8"
+  ],
+  "float" => [
+    "_v, = struct.unpack_from('>d', _rbuf, _pos); _pos += 8"
+  ],
+  "bool" => ["_v = _rbuf[_pos] != 0; _pos += 1"],
+  "string" => [
+    "_slen, = struct.unpack_from('>I', _rbuf, _pos); _pos += 4",
+    "_v = _rbuf[_pos:_pos+_slen].decode('utf-8'); _pos += _slen"
+  ],
+  "named" => gen_unpack_named(ty, types),
+  _ => ["_v = None  # unknown unpack type"],
 }
 
 // ── Generate record class ──
-
-local fn gen_record_class(name: String, fields: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["    \"\"\"${doc}\"\"\""] else []
-  let params = fields |> list.map((f) => "${get_str(f, "name")}: ${py_type(get_type(f))}") |> list.join(", ")
-  let init_body = fields |> list.map((f) => "        self.${get_str(f, "name")} = ${get_str(f, "name")}")
-  let repr_parts = fields |> list.map((f) => "${get_str(f, "name")}={self.${get_str(f, "name")}}") |> list.join(", ")
-  let eq_parts = fields |> list.map((f) => "self.${get_str(f, "name")} == other.${get_str(f, "name")}") |> list.join(" and ")
-  let hash_parts = fields |> list.map((f) => "self.${get_str(f, "name")}") |> list.join(", ")
-
-  ["class ${name}:"]
-  + doc_line
-  + ["    def __init__(self, ${params}):"]
-  + init_body
-  + ["",
-     "    def __repr__(self): return f'${name}(${repr_parts})'",
-     "    def __eq__(self, other): return isinstance(other, ${name}) and ${eq_parts}",
-     "    def __hash__(self): return hash((${hash_parts}))",
-     ""]
+local fn gen_unpack_named(ty: Value, types: List[Value]) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    let unpack_lines = fields |> list.flat_map((f) => {
+      let fname = get_str(f, "name");
+      gen_unpack_expr(get_type(f), types) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
+    });
+    let ctor_args = fields |> list.map((f) => {
+      let n = get_str(f, "name");
+      "${n}=_f_${n}"
+    }) |> list.join(", ");
+    unpack_lines + [
+      "_v = ${name}(${ctor_args})"
+    ]
+  } else ["_v = None  # unknown named type"]
 }
 
 // ── Generate variant class ──
-
-local fn gen_variant_class(name: String, cases: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["    \"\"\"${doc}\"\"\""] else []
-  let factory_methods = cases |> list.flat_map((case) => {
-    let cname = get_str(case, "name") |> string.to_lower
-    let case_name = get_str(case, "name")
-    match json.get(case, "payload") {
-      some(pl) => {
-        if get_kind(pl) == "tuple" then
-          match list.len(get_arr(pl, "fields")) {
-            1 => ["    @staticmethod", "    def ${cname}(value): return ${name}('${case_name}', value)"],
-            2 => ["    @staticmethod", "    def ${cname}(v0, v1): return ${name}('${case_name}', v0, v1)"],
-            _ => [],
-          }
-        else []
-      },
-      none => ["    @staticmethod", "    def ${cname}(): return ${name}('${case_name}')"],
-    }
-  })
-
-  ["class ${name}:"]
-  + doc_line
-  + ["    def __init__(self, tag, *values):",
-     "        self.tag = tag",
-     "        self.values = values"]
-  + factory_methods
-  + ["    def __repr__(self):",
-     "        vals = ', '.join(str(v) for v in self.values)",
-     "        return f'${name}.{self.tag}({vals})' if vals else f'${name}.{self.tag}'",
-     "    def __eq__(self, other): return isinstance(other, ${name}) and self.tag == other.tag and self.values == other.values",
-     "    def __hash__(self): return hash((self.tag, self.values))",
-     ""]
+local fn gen_record_class(name: String, fields: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "    \"\"\"${doc}\"\"\""
+  ]
+  else [];
+  let params = fields |> list.map((f) => "${get_str(f, "name")}: ${py_type(get_type(f))}") |> list.join(", ");
+  let init_body = fields |> list.map((f) => "        self.${get_str(f, "name")} = ${get_str(f, "name")}");
+  let repr_parts = fields |> list.map((f) => "${get_str(f, "name")}={self.${get_str(f, "name")}}") |> list.join(", ");
+  let eq_parts = fields |> list.map((f) => "self.${get_str(f, "name")} == other.${get_str(f, "name")}") |> list.join(" and ");
+  let hash_parts = fields |> list.map((f) => "self.${get_str(f, "name")}") |> list.join(", ");
+  [
+    "class ${name}:"
+  ] + doc_line + [
+    "    def __init__(self, ${params}):"
+  ] + init_body + [
+    "",
+    "    def __repr__(self): return f'${name}(${repr_parts})'",
+    "    def __eq__(self, other): return isinstance(other, ${name}) and ${eq_parts}",
+    "    def __hash__(self): return hash((${hash_parts}))",
+    ""
+  ]
 }
 
 // ── Generate function wrapper ──
-
-local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
-  let fname = get_str(f, "name")
-  let params = get_arr(f, "params")
-  let ret = json.get(f, "return") ?? json.null()
-  let doc = get_str(f, "doc")
-  let py_params = params |> list.map((p) => "${get_str(p, "name")}: ${py_type(json.get(p, "type") ?? json.null())}") |> list.join(", ")
-  let doc_line = if doc != "" then ["    \"\"\"${doc}\"\"\""] else []
-  let pack_lines = params |> list.flat_map((p) =>
-    gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types) |> list.map((l) => "    ${l}")
-  )
-  let unpack_lines = gen_unpack_expr(ret, types) |> list.map((l) => "    ${l}")
-
-  ["def ${fname}(${py_params}) -> ${py_type(ret)}:"]
-  + doc_line
-  + ["    buf = b''"]
-  + pack_lines
-  + ["    _out = ctypes.create_string_buffer(4096)",
-     "    _rlen = _lib.bridge_${fname}(buf, len(buf), _out, 4096)",
-     "    _rbuf = _out.raw[:_rlen]",
-     "    _pos = 0"]
-  + unpack_lines
-  + ["    return _v", ""]
+local fn gen_variant_class(name: String, cases: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "    \"\"\"${doc}\"\"\""
+  ]
+  else [];
+  let factory_methods = cases |> list.flat_map((case) => {
+    let cname = get_str(case, "name") |> string.to_lower;
+    let case_name = get_str(case, "name");
+    match json.get(case, "payload") {
+      some(pl) => {
+        if get_kind(pl) == "tuple" then match list.len(get_arr(pl, "fields")) {
+          1 => [
+            "    @staticmethod",
+            "    def ${cname}(value): return ${name}('${case_name}', value)"
+          ],
+          2 => [
+            "    @staticmethod",
+            "    def ${cname}(v0, v1): return ${name}('${case_name}', v0, v1)"
+          ],
+          _ => [],
+        } else []
+      },
+      none => [
+        "    @staticmethod",
+        "    def ${cname}(): return ${name}('${case_name}')"
+      ],
+    }
+  });
+  [
+    "class ${name}:"
+  ] + doc_line + ["    def __init__(self, tag, *values):", "        self.tag = tag", "        self.values = values"] + factory_methods + [
+    "    def __repr__(self):",
+    "        vals = ', '.join(str(v) for v in self.values)",
+    "        return f'${name}.{self.tag}({vals})' if vals else f'${name}.{self.tag}'",
+    "    def __eq__(self, other): return isinstance(other, ${name}) and self.tag == other.tag and self.values == other.values",
+    "    def __hash__(self): return hash((self.tag, self.values))",
+    ""
+  ]
 }
 
 // ── Public API ──
+local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
+  let fname = get_str(f, "name");
+  let params = get_arr(f, "params");
+  let ret = json.get(f, "return") ?? json.null();
+  let doc = get_str(f, "doc");
+  let py_params = params |> list.map((p) => "${get_str(p, "name")}: ${py_type(json.get(p, "type") ?? json.null())}") |> list.join(", ");
+  let doc_line = if doc != "" then [
+    "    \"\"\"${doc}\"\"\""
+  ]
+  else [];
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types) |> list.map((l) => "    ${l}"));
+  let unpack_lines = gen_unpack_expr(ret, types) |> list.map((l) => "    ${l}");
+  [
+    "def ${fname}(${py_params}) -> ${py_type(ret)}:"
+  ] + doc_line + ["    buf = b''"] + pack_lines + [
+    "    _out = ctypes.create_string_buffer(4096)",
+    "    _rlen = _lib.bridge_${fname}(buf, len(buf), _out, 4096)",
+    "    _rbuf = _out.raw[:_rlen]",
+    "    _pos = 0"
+  ] + unpack_lines + ["    return _v", ""]
+}
 
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
-  let module_name = get_str(iface, "module")
-  let types = get_arr(iface, "types")
-  let functions = get_arr(iface, "functions")
-
-  let header = """
-    \"\"\"Almide module: ${module_name} — auto-generated by almide-bridge\"\"\"
-    import ctypes, struct, os
-
-    _dir = os.path.dirname(os.path.abspath(__file__))
-    import sys as _sys
-    _ext = '.dylib' if _sys.platform == 'darwin' else '.dll' if _sys.platform == 'win32' else '.so'
-    _lib = ctypes.CDLL(os.path.join(_dir, 'libalmide_${module_name}' + _ext))
-
-    """
+  let iface = json.parse(iface_json) ?? json.null();
+  let module_name = get_str(iface, "module");
+  let types = get_arr(iface, "types");
+  let functions = get_arr(iface, "functions");
+  let header = "\"\"\"Almide module: ${module_name} — auto-generated by almide-bridge\"\"\"\nimport ctypes, struct, os\n\n_dir = os.path.dirname(os.path.abspath(__file__))\nimport sys as _sys\n_ext = '.dylib' if _sys.platform == 'darwin' else '.dll' if _sys.platform == 'win32' else '.so'\n_lib = ctypes.CDLL(os.path.join(_dir, 'libalmide_${module_name}' + _ext))\n";
   let type_defs = types |> list.flat_map((t) => {
-    let name = get_str(t, "name")
-    let kind = json.get(t, "kind") ?? json.null()
+    let name = get_str(t, "name");
+    let kind = json.get(t, "kind") ?? json.null();
     match get_kind(kind) {
-      "record"  => gen_record_class(name, get_arr(kind, "fields"), t),
+      "record" => gen_record_class(name, get_arr(kind, "fields"), t),
       "variant" => gen_variant_class(name, get_arr(kind, "cases"), t),
-      _         => [],
+      _ => [],
     }
-  })
-  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types))
-
+  });
+  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types));
   ([header] + type_defs + fn_defs) |> list.join("\n")
 }

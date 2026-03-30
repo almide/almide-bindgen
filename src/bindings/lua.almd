@@ -5,268 +5,228 @@
 // Produces a .lua file using LuaJIT FFI for loading the shared library.
 import json
 import self as bindgen
+import json
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)
+
 local fn get_arr(v: Value, key: String) -> List[Value] = bindgen.get_arr(v, key)
+
 local fn get_kind(v: Value) -> String = bindgen.get_kind(v)
+
 local fn get_type(v: Value) -> Value = bindgen.get_type(v)
+
 local fn find_type_def(name: String, types: List[Value]) -> Value = bindgen.find_type_def(name, types)
+
 local fn is_record(name: String, types: List[Value]) -> Bool = bindgen.is_record(name, types)
-local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Pack code generation ──
+local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
-local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["${indent}pack_i64(buf, ${expr})"],
-    "float"  => ["${indent}pack_f64(buf, ${expr})"],
-    "bool"   => ["${indent}buf[#buf + 1] = string.char(${expr} and 1 or 0)"],
-    "string" => ["${indent}pack_str(buf, ${expr})"],
-    "named"  => gen_pack_named(expr, ty, types, indent),
-    _        => ["${indent}-- unknown pack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types, indent))
-  }
-  else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
-  else ["${indent}-- unknown named type: ${name}"]
+local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}pack_i64(buf, ${expr})"
+  ],
+  "float" => [
+    "${indent}pack_f64(buf, ${expr})"
+  ],
+  "bool" => [
+    "${indent}buf[#buf + 1] = string.char(${expr} and 1 or 0)"
+  ],
+  "string" => [
+    "${indent}pack_str(buf, ${expr})"
+  ],
+  "named" => gen_pack_named(expr, ty, types, indent),
+  _ => [
+    "${indent}-- unknown pack type: ${get_kind(ty)}"
+  ],
 }
 
-local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
-  let case_lines = cases
-    |> list.enumerate
-    |> list.flat_map((entry) => {
-      let (idx, case) = entry
-      let cname = get_str(case, "name")
-      let cond = if idx == 0 then "if" else "elseif"
-      let header = [
-        "${indent}${cond} ${expr}.tag == \"${cname}\" then",
-        "${indent}  pack_u32(buf, ${int.to_string(idx)})",
-      ]
-      let payload_lines = match json.get(case, "payload") {
-        some(pl) => if get_kind(pl) == "tuple" then
-          get_arr(pl, "fields")
-            |> list.enumerate
-            |> list.flat_map((pe) => {
-              let (pi, pf) = pe
-              gen_pack_expr("${expr}.values[${int.to_string(pi + 1)}]", pf, types, indent + "  ")
-            })
-          else [],
-        none => [],
-      }
-      header + payload_lines
-    })
-  case_lines + ["${indent}end"]
+local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types, indent))
+  } else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
+  else [
+    "${indent}-- unknown named type: ${name}"
+  ]
 }
 
 // ── Unpack code generation ──
+local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
+  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases");
+  let case_lines = cases |> list.enumerate |> list.flat_map((entry) => {
+    let (idx, case) = entry;
+    let cname = get_str(case, "name");
+    let cond = if idx == 0 then "if" else "elseif";
+    let header = [
+      "${indent}${cond} ${expr}.tag == \"${cname}\" then",
+      "${indent}  pack_u32(buf, ${int.to_string(idx)})"
+    ];
+    let payload_lines = match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then get_arr(pl, "fields") |> list.enumerate |> list.flat_map((pe) => {
+        let (pi, pf) = pe;
+        gen_pack_expr("${expr}.values[${int.to_string(pi + 1)}]", pf, types, indent + "  ")
+      })
+      else [],
+      none => [],
+    };
+    header + payload_lines
+  });
+  case_lines + [
+    "${indent}end"
+  ]
+}
 
-local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["${indent}local _v = unpack_i64(rbuf, pos); pos = pos + 8"],
-    "float"  => ["${indent}local _v = unpack_f64(rbuf, pos); pos = pos + 8"],
-    "bool"   => ["${indent}local _v = string.byte(rbuf, pos) ~= 0; pos = pos + 1"],
-    "string" => ["${indent}local _v, _slen = unpack_str(rbuf, pos); pos = pos + 4 + _slen"],
-    "named"  => gen_unpack_named(ty, types, indent),
-    _        => ["${indent}-- unknown unpack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    let unpack_lines = fields |> list.flat_map((f) => {
-      let fname = get_str(f, "name")
-      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
-    })
-    let ctor_args = fields |> list.map((f2) => "${get_str(f2, "name")} = _f_${get_str(f2, "name")}") |> list.join(", ")
-    unpack_lines + ["${indent}local _v = {${ctor_args}}"]
-  } else ["${indent}-- unknown named type: ${name}"]
+local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}local _v = unpack_i64(rbuf, pos); pos = pos + 8"
+  ],
+  "float" => [
+    "${indent}local _v = unpack_f64(rbuf, pos); pos = pos + 8"
+  ],
+  "bool" => [
+    "${indent}local _v = string.byte(rbuf, pos) ~= 0; pos = pos + 1"
+  ],
+  "string" => [
+    "${indent}local _v, _slen = unpack_str(rbuf, pos); pos = pos + 4 + _slen"
+  ],
+  "named" => gen_unpack_named(ty, types, indent),
+  _ => [
+    "${indent}-- unknown unpack type: ${get_kind(ty)}"
+  ],
 }
 
 // ── Generate record constructor ──
-
-local fn gen_record_ctor(name: String, fields: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["-- ${doc}"] else []
-  let param_names = fields |> list.map((f) => get_str(f, "name")) |> list.join(", ")
-  let field_lines = fields |> list.map((f) => {
-    let fname = get_str(f, "name")
-    "    ${fname} = ${fname},"
-  })
-
-  doc_line
-  + ["function M.${name}(${param_names})",
-     "  return {"]
-  + field_lines
-  + ["  }",
-     "end",
-     ""]
+local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    let unpack_lines = fields |> list.flat_map((f) => {
+      let fname = get_str(f, "name");
+      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
+    });
+    let ctor_args = fields |> list.map((f2) => "${get_str(f2, "name")} = _f_${get_str(f2, "name")}") |> list.join(", ");
+    unpack_lines + [
+      "${indent}local _v = {${ctor_args}}"
+    ]
+  } else [
+    "${indent}-- unknown named type: ${name}"
+  ]
 }
 
 // ── Generate variant constructors ──
+local fn gen_record_ctor(name: String, fields: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "-- ${doc}"
+  ]
+  else [];
+  let param_names = fields |> list.map((f) => get_str(f, "name")) |> list.join(", ");
+  let field_lines = fields |> list.map((f) => {
+    let fname = get_str(f, "name");
+    "    ${fname} = ${fname},"
+  });
+  doc_line + [
+    "function M.${name}(${param_names})",
+    "  return {"
+  ] + field_lines + ["  }", "end", ""]
+}
 
+// ── Generate function wrapper ──
 local fn gen_variant_ctors(name: String, cases: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["-- ${name}: ${doc}"] else []
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "-- ${name}: ${doc}"
+  ]
+  else [];
   let ctor_lines = cases |> list.flat_map((case) => {
-    let cname = get_str(case, "name")
+    let cname = get_str(case, "name");
     match json.get(case, "payload") {
       some(pl) => {
         if get_kind(pl) == "tuple" then {
-          let pfields = get_arr(pl, "fields")
-          let param_list = pfields
-            |> list.enumerate
-            |> list.map((pe) => {
-              let (pi, _) = pe
-              "v${int.to_string(pi)}"
-            })
-          let params = param_list |> list.join(", ")
+          let pfields = get_arr(pl, "fields");
+          let param_list = pfields |> list.enumerate |> list.map((pe) => {
+            let (pi, _) = pe;
+            "v${int.to_string(pi)}"
+          });
+          let params = param_list |> list.join(", ");
           [
             "function M.${name}_${cname}(${params})",
             "  return {tag = \"${cname}\", values = {${params}}}",
-            "end",
+            "end"
           ]
         } else [
           "function M.${name}_${cname}()",
           "  return {tag = \"${cname}\", values = {}}",
-          "end",
+          "end"
         ]
       },
       none => [
         "function M.${name}_${cname}()",
         "  return {tag = \"${cname}\", values = {}}",
-        "end",
+        "end"
       ],
     }
-  })
-
+  });
   doc_line + ctor_lines + [""]
 }
 
-// ── Generate function wrapper ──
-
+// ── Main ──
 local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
-  let fname = get_str(f, "name")
-  let params = get_arr(f, "params")
-  let ret = json.get(f, "return") ?? json.null()
-  let doc = get_str(f, "doc")
-  let lua_params = params |> list.map((p) => get_str(p, "name")) |> list.join(", ")
-  let doc_line = if doc != "" then ["--- ${doc}"] else []
-  let pack_lines = params |> list.flat_map((p) =>
-    gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "  ")
-  )
-  let unpack_lines = gen_unpack_expr(ret, types, "  ")
-
-  doc_line
-  + ["function M.${fname}(${lua_params})",
-     "  local buf = {}"]
-  + pack_lines
-  + ["  local args = table.concat(buf)",
-     "  local out = ffi.new('char[4096]')",
-     "  local rlen = lib.bridge_${fname}(args, #args, out, 4096)",
-     "  local rbuf = ffi.string(out, rlen)",
-     "  local pos = 1"]
-  + unpack_lines
-  + ["  return _v",
-     "end",
-     ""]
+  let fname = get_str(f, "name");
+  let params = get_arr(f, "params");
+  let ret = json.get(f, "return") ?? json.null();
+  let doc = get_str(f, "doc");
+  let lua_params = params |> list.map((p) => get_str(p, "name")) |> list.join(", ");
+  let doc_line = if doc != "" then [
+    "--- ${doc}"
+  ]
+  else [];
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "  "));
+  let unpack_lines = gen_unpack_expr(ret, types, "  ");
+  doc_line + [
+    "function M.${fname}(${lua_params})",
+    "  local buf = {}"
+  ] + pack_lines + [
+    "  local args = table.concat(buf)",
+    "  local out = ffi.new('char[4096]')",
+    "  local rlen = lib.bridge_${fname}(args, #args, out, 4096)",
+    "  local rbuf = ffi.string(out, rlen)",
+    "  local pos = 1"
+  ] + unpack_lines + ["  return _v", "end", ""]
 }
 
-// ── Main ──
-
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
-  let module_name = get_str(iface, "module")
-  let types = get_arr(iface, "types")
-  let functions = get_arr(iface, "functions")
-
-  let header = """
-    -- Auto-generated by almide-bridge
-    local ffi = require('ffi')
-
-    """
-  let ffi_decls = ["ffi.cdef[["]
-    + (functions |> list.map((f) => {
-        let fname = get_str(f, "name")
-        "  int bridge_${fname}(const char* args, int args_len, char* out, int out_cap);"
-      }))
-    + ["  void* bridge_alloc(int size);",
-       "  void bridge_free(void* ptr, int size);",
-       "]]",
-       ""]
+  let iface = json.parse(iface_json) ?? json.null();
+  let module_name = get_str(iface, "module");
+  let types = get_arr(iface, "types");
+  let functions = get_arr(iface, "functions");
+  let header = "-- Auto-generated by almide-bridge\nlocal ffi = require('ffi')\n";
+  let ffi_decls = ["ffi.cdef[["] + (functions |> list.map((f) => {
+    let fname = get_str(f, "name");
+    "  int bridge_${fname}(const char* args, int args_len, char* out, int out_cap);"
+  })) + [
+    "  void* bridge_alloc(int size);",
+    "  void bridge_free(void* ptr, int size);",
+    "]]",
+    ""
+  ];
   let lib_load = [
     "local lib = ffi.load('almide_${module_name}')",
     "local M = {}",
-    "",
-  ]
-  let helpers = """
-
-    -- Serialization helpers
-    local function pack_i64(buf, v)
-      local tmp = ffi.new('int64_t[1]', v)
-      local p = ffi.cast('uint8_t*', tmp)
-      local bytes = {}
-      for i = 7, 0, -1 do bytes[#bytes + 1] = string.char(p[i]) end
-      buf[#buf + 1] = table.concat(bytes)
-    end
-
-    local function pack_f64(buf, v)
-      local tmp = ffi.new('double[1]', v)
-      local p = ffi.cast('uint8_t*', tmp)
-      local bytes = {}
-      for i = 7, 0, -1 do bytes[#bytes + 1] = string.char(p[i]) end
-      buf[#buf + 1] = table.concat(bytes)
-    end
-
-    local function pack_u32(buf, v)
-      local tmp = ffi.new('uint32_t[1]', v)
-      local p = ffi.cast('uint8_t*', tmp)
-      local bytes = {}
-      for i = 3, 0, -1 do bytes[#bytes + 1] = string.char(p[i]) end
-      buf[#buf + 1] = table.concat(bytes)
-    end
-
-    local function pack_str(buf, s)
-      pack_u32(buf, #s)
-      buf[#buf + 1] = s
-    end
-
-    local function unpack_i64(buf, pos)
-      local tmp = ffi.new('uint8_t[8]')
-      for i = 0, 7 do tmp[7 - i] = string.byte(buf, pos + i) end
-      return tonumber(ffi.cast('int64_t*', tmp)[0])
-    end
-
-    local function unpack_f64(buf, pos)
-      local tmp = ffi.new('uint8_t[8]')
-      for i = 0, 7 do tmp[7 - i] = string.byte(buf, pos + i) end
-      return tonumber(ffi.cast('double*', tmp)[0])
-    end
-
-    local function unpack_str(buf, pos)
-      local tmp = ffi.new('uint8_t[4]')
-      for i = 0, 3 do tmp[3 - i] = string.byte(buf, pos + i) end
-      local slen = tonumber(ffi.cast('uint32_t*', tmp)[0])
-      return buf:sub(pos + 4, pos + 3 + slen), slen
-    end
-
-    """
+    ""
+  ];
+  let helpers = "\n-- Serialization helpers\nlocal function pack_i64(buf, v)\n  local tmp = ffi.new('int64_t[1]', v)\n  local p = ffi.cast('uint8_t*', tmp)\n  local bytes = {}\n  for i = 7, 0, -1 do bytes[#bytes + 1] = string.char(p[i]) end\n  buf[#buf + 1] = table.concat(bytes)\nend\n\nlocal function pack_f64(buf, v)\n  local tmp = ffi.new('double[1]', v)\n  local p = ffi.cast('uint8_t*', tmp)\n  local bytes = {}\n  for i = 7, 0, -1 do bytes[#bytes + 1] = string.char(p[i]) end\n  buf[#buf + 1] = table.concat(bytes)\nend\n\nlocal function pack_u32(buf, v)\n  local tmp = ffi.new('uint32_t[1]', v)\n  local p = ffi.cast('uint8_t*', tmp)\n  local bytes = {}\n  for i = 3, 0, -1 do bytes[#bytes + 1] = string.char(p[i]) end\n  buf[#buf + 1] = table.concat(bytes)\nend\n\nlocal function pack_str(buf, s)\n  pack_u32(buf, #s)\n  buf[#buf + 1] = s\nend\n\nlocal function unpack_i64(buf, pos)\n  local tmp = ffi.new('uint8_t[8]')\n  for i = 0, 7 do tmp[7 - i] = string.byte(buf, pos + i) end\n  return tonumber(ffi.cast('int64_t*', tmp)[0])\nend\n\nlocal function unpack_f64(buf, pos)\n  local tmp = ffi.new('uint8_t[8]')\n  for i = 0, 7 do tmp[7 - i] = string.byte(buf, pos + i) end\n  return tonumber(ffi.cast('double*', tmp)[0])\nend\n\nlocal function unpack_str(buf, pos)\n  local tmp = ffi.new('uint8_t[4]')\n  for i = 0, 3 do tmp[3 - i] = string.byte(buf, pos + i) end\n  local slen = tonumber(ffi.cast('uint32_t*', tmp)[0])\n  return buf:sub(pos + 4, pos + 3 + slen), slen\nend\n";
   let type_defs = types |> list.flat_map((t) => {
-    let name = get_str(t, "name")
-    let kind = json.get(t, "kind") ?? json.null()
+    let name = get_str(t, "name");
+    let kind = json.get(t, "kind") ?? json.null();
     match get_kind(kind) {
-      "record"  => gen_record_ctor(name, get_arr(kind, "fields"), t),
+      "record" => gen_record_ctor(name, get_arr(kind, "fields"), t),
       "variant" => gen_variant_ctors(name, get_arr(kind, "cases"), t),
-      _         => [],
+      _ => [],
     }
-  })
-  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types))
-
+  });
+  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types));
   header + ((ffi_decls + lib_load) |> list.join("\n")) + helpers + ((type_defs + fn_defs + ["return M"]) |> list.join("\n"))
 }

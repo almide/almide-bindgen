@@ -5,284 +5,275 @@
 // Produces a .dart file using dart:ffi for FFI and ByteData for big-endian serialization.
 import json
 import self as bindgen
+import json
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)
+
 local fn get_arr(v: Value, key: String) -> List[Value] = bindgen.get_arr(v, key)
+
 local fn get_kind(v: Value) -> String = bindgen.get_kind(v)
+
 local fn get_type(v: Value) -> Value = bindgen.get_type(v)
+
 local fn find_type_def(name: String, types: List[Value]) -> Value = bindgen.find_type_def(name, types)
+
 local fn is_record(name: String, types: List[Value]) -> Bool = bindgen.is_record(name, types)
-local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Dart type mapping ──
-
-local fn dart_type(ty: Value) -> String =
-  match get_kind(ty) {
-    "float"  => "double",
-    "int"    => "int",
-    "string" => "String",
-    "bool"   => "bool",
-    "named"  => get_str(ty, "name"),
-    "option" => "${dart_type(json.get(ty, "inner") ?? json.null())}?",
-    "list"   => "List<${dart_type(json.get(ty, "inner") ?? json.null())}>",
-    _        => "dynamic",
-  }
+local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Pack code generation ──
-
-local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int" => [
-      "${indent}_bd.setInt64(0, ${expr}, Endian.big);",
-      "${indent}buf.addAll(_tmp);",
-    ],
-    "float" => [
-      "${indent}_bd.setFloat64(0, ${expr}, Endian.big);",
-      "${indent}buf.addAll(_tmp);",
-    ],
-    "bool" => ["${indent}buf.add(${expr} ? 1 : 0);"],
-    "string" => [
-      "${indent}{",
-      "${indent}  final _sb = utf8.encode(${expr});",
-      "${indent}  _bd.setUint32(0, _sb.length, Endian.big);",
-      "${indent}  buf.addAll(_tmp.sublist(0, 4));",
-      "${indent}  buf.addAll(_sb);",
-      "${indent}}",
-    ],
-    "named" => gen_pack_named(expr, ty, types, indent),
-    _       => ["${indent}// unknown pack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types, indent))
-  }
-  else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
-  else ["${indent}// unknown named type: ${name}"]
+local fn dart_type(ty: Value) -> String = match get_kind(ty) {
+  "float" => "double",
+  "int" => "int",
+  "string" => "String",
+  "bool" => "bool",
+  "named" => get_str(ty, "name"),
+  "option" => "${dart_type(json.get(ty, "inner") ?? json.null())}?",
+  "list" => "List<${dart_type(json.get(ty, "inner") ?? json.null())}>",
+  _ => "dynamic",
 }
 
-local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
-  let case_lines = cases
-    |> list.enumerate
-    |> list.flat_map((entry) => {
-      let (idx, case) = entry
-      let cname = get_str(case, "name")
-      let cond = if idx == 0 then "if" else "} else if"
-      let header = [
-        "${indent}${cond} (${expr} is ${cname}) {",
-        "${indent}  _bd.setUint32(0, ${int.to_string(idx)}, Endian.big);",
-        "${indent}  buf.addAll(_tmp.sublist(0, 4));",
-      ]
-      let payload_lines = match json.get(case, "payload") {
-        some(pl) => if get_kind(pl) == "tuple" then
-          get_arr(pl, "fields")
-            |> list.enumerate
-            |> list.flat_map((pe) => {
-              let (pi, pf) = pe
-              gen_pack_expr("(${expr} as ${cname}).v${int.to_string(pi)}", pf, types, indent + "  ")
-            })
-          else [],
-        none => [],
-      }
-      header + payload_lines
-    })
-  case_lines + ["${indent}}"]
+local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}_bd.setInt64(0, ${expr}, Endian.big);",
+    "${indent}buf.addAll(_tmp);"
+  ],
+  "float" => [
+    "${indent}_bd.setFloat64(0, ${expr}, Endian.big);",
+    "${indent}buf.addAll(_tmp);"
+  ],
+  "bool" => [
+    "${indent}buf.add(${expr} ? 1 : 0);"
+  ],
+  "string" => [
+    "${indent}{",
+    "${indent}  final _sb = utf8.encode(${expr});",
+    "${indent}  _bd.setUint32(0, _sb.length, Endian.big);",
+    "${indent}  buf.addAll(_tmp.sublist(0, 4));",
+    "${indent}  buf.addAll(_sb);",
+    "${indent}}"
+  ],
+  "named" => gen_pack_named(expr, ty, types, indent),
+  _ => [
+    "${indent}// unknown pack type: ${get_kind(ty)}"
+  ],
+}
+
+local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types, indent))
+  } else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
+  else [
+    "${indent}// unknown named type: ${name}"
+  ]
 }
 
 // ── Unpack code generation ──
+local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
+  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases");
+  let case_lines = cases |> list.enumerate |> list.flat_map((entry) => {
+    let (idx, case) = entry;
+    let cname = get_str(case, "name");
+    let cond = if idx == 0 then "if" else "} else if";
+    let header = [
+      "${indent}${cond} (${expr} is ${cname}) {",
+      "${indent}  _bd.setUint32(0, ${int.to_string(idx)}, Endian.big);",
+      "${indent}  buf.addAll(_tmp.sublist(0, 4));"
+    ];
+    let payload_lines = match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then get_arr(pl, "fields") |> list.enumerate |> list.flat_map((pe) => {
+        let (pi, pf) = pe;
+        gen_pack_expr("(${expr} as ${cname}).v${int.to_string(pi)}", pf, types, indent + "  ")
+      })
+      else [],
+      none => [],
+    };
+    header + payload_lines
+  });
+  case_lines + [
+    "${indent}}"
+  ]
+}
 
-local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int"    => ["${indent}final _v = _rd.getInt64(_pos, Endian.big); _pos += 8;"],
-    "float"  => ["${indent}final _v = _rd.getFloat64(_pos, Endian.big); _pos += 8;"],
-    "bool"   => ["${indent}final _v = _rbuf[_pos++] != 0;"],
-    "string" => [
-      "${indent}final _slen = _rd.getUint32(_pos, Endian.big); _pos += 4;",
-      "${indent}final _v = utf8.decode(_rbuf.sublist(_pos, _pos + _slen)); _pos += _slen;",
-    ],
-    "named" => gen_unpack_named(ty, types, indent),
-    _       => ["${indent}dynamic _v; // unknown unpack type"],
-  }
-
-local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    let unpack_lines = fields |> list.flat_map((f) => {
-      let fname = get_str(f, "name")
-      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
-    })
-    let ctor_args = fields |> list.map((f2) => "${get_str(f2, "name")}: _f_${get_str(f2, "name")}") |> list.join(", ")
-    unpack_lines + ["${indent}final _v = ${name}(${ctor_args});"]
-  } else ["${indent}${dart_type(ty)}? _v; // unknown named type"]
+local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}final _v = _rd.getInt64(_pos, Endian.big); _pos += 8;"
+  ],
+  "float" => [
+    "${indent}final _v = _rd.getFloat64(_pos, Endian.big); _pos += 8;"
+  ],
+  "bool" => [
+    "${indent}final _v = _rbuf[_pos++] != 0;"
+  ],
+  "string" => [
+    "${indent}final _slen = _rd.getUint32(_pos, Endian.big); _pos += 4;",
+    "${indent}final _v = utf8.decode(_rbuf.sublist(_pos, _pos + _slen)); _pos += _slen;"
+  ],
+  "named" => gen_unpack_named(ty, types, indent),
+  _ => [
+    "${indent}dynamic _v; // unknown unpack type"
+  ],
 }
 
 // ── Generate record class ──
-
-local fn gen_record_class(name: String, fields: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["/// ${doc}"] else []
-  let field_decls = fields |> list.map((f) => "  final ${dart_type(get_type(f))} ${get_str(f, "name")};")
-  let ctor_params = fields |> list.map((f) => "required this.${get_str(f, "name")}") |> list.join(", ")
-  let to_str_parts = fields |> list.map((f) => "${get_str(f, "name")}: $${get_str(f, "name")}") |> list.join(", ")
-  let eq_parts = fields |> list.map((f) => "${get_str(f, "name")} == other.${get_str(f, "name")}") |> list.join(" && ")
-  let hash_parts = fields |> list.map((f) => "${get_str(f, "name")}.hashCode") |> list.join(" ^ ")
-
-  doc_line
-  + ["class ${name} {"]
-  + field_decls
-  + ["",
-     "  const ${name}({${ctor_params}});",
-     "",
-     "  @override",
-     "  String toString() => '${name}(${to_str_parts})';",
-     "",
-     "  @override",
-     "  bool operator ==(Object other) =>",
-     "      other is ${name} && ${eq_parts};",
-     "",
-     "  @override",
-     "  int get hashCode => ${hash_parts};",
-     "}",
-     ""]
+local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    let unpack_lines = fields |> list.flat_map((f) => {
+      let fname = get_str(f, "name");
+      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
+    });
+    let ctor_args = fields |> list.map((f2) => "${get_str(f2, "name")}: _f_${get_str(f2, "name")}") |> list.join(", ");
+    unpack_lines + [
+      "${indent}final _v = ${name}(${ctor_args});"
+    ]
+  } else [
+    "${indent}${dart_type(ty)}? _v; // unknown named type"
+  ]
 }
 
 // ── Generate variant classes ──
+local fn gen_record_class(name: String, fields: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "/// ${doc}"
+  ]
+  else [];
+  let field_decls = fields |> list.map((f) => "  final ${dart_type(get_type(f))} ${get_str(f, "name")};");
+  let ctor_params = fields |> list.map((f) => "required this.${get_str(f, "name")}") |> list.join(", ");
+  let to_str_parts = fields |> list.map((f) => "${get_str(f, "name")}: $${get_str(f, "name")}") |> list.join(", ");
+  let eq_parts = fields |> list.map((f) => "${get_str(f, "name")} == other.${get_str(f, "name")}") |> list.join(" && ");
+  let hash_parts = fields |> list.map((f) => "${get_str(f, "name")}.hashCode") |> list.join(" ^ ");
+  doc_line + [
+    "class ${name} {"
+  ] + field_decls + [
+    "",
+    "  const ${name}({${ctor_params}});",
+    "",
+    "  @override",
+    "  String toString() => '${name}(${to_str_parts})';",
+    "",
+    "  @override",
+    "  bool operator ==(Object other) =>",
+    "      other is ${name} && ${eq_parts};",
+    "",
+    "  @override",
+    "  int get hashCode => ${hash_parts};",
+    "}",
+    ""
+  ]
+}
 
+// ── Generate function wrapper ──
 local fn gen_variant_classes(name: String, cases: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["/// ${doc}"] else []
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "/// ${doc}"
+  ]
+  else [];
   let case_lines = cases |> list.flat_map((case) => {
-    let cname = get_str(case, "name")
+    let cname = get_str(case, "name");
     match json.get(case, "payload") {
       some(pl) => {
         if get_kind(pl) == "tuple" then {
-          let pfields = get_arr(pl, "fields")
-          let field_decls = pfields
-            |> list.enumerate
-            |> list.map((e) => {
-              let (pi, pf) = e
-              "  final ${dart_type(pf)} v${int.to_string(pi)};"
-            })
-          let ctor_parts = pfields
-            |> list.enumerate
-            |> list.map((e) => {
-              let (ci, _) = e
-              "required this.v${int.to_string(ci)}"
-            })
-          let repr_parts = pfields
-            |> list.enumerate
-            |> list.map((e) => {
-              let (ri, _) = e
-              "$v${int.to_string(ri)}"
-            })
-          ["class ${cname} extends ${name} {"]
-          + field_decls
-          + ["  ${cname}({${ctor_parts |> list.join(", ")}});",
-             "  @override",
-             "  String toString() => '${cname}(${repr_parts |> list.join(", ")})';",
-             "}",
-             ""]
+          let pfields = get_arr(pl, "fields");
+          let field_decls = pfields |> list.enumerate |> list.map((e) => {
+            let (pi, pf) = e;
+            "  final ${dart_type(pf)} v${int.to_string(pi)};"
+          });
+          let ctor_parts = pfields |> list.enumerate |> list.map((e) => {
+            let (ci, _) = e;
+            "required this.v${int.to_string(ci)}"
+          });
+          let repr_parts = pfields |> list.enumerate |> list.map((e) => {
+            let (ri, _) = e;
+            "$v${int.to_string(ri)}"
+          });
+          [
+            "class ${cname} extends ${name} {"
+          ] + field_decls + [
+            "  ${cname}({${ctor_parts |> list.join(", ")}});",
+            "  @override",
+            "  String toString() => '${cname}(${repr_parts |> list.join(", ")})';",
+            "}",
+            ""
+          ]
         } else [
           "class ${cname} extends ${name} {}",
-          "",
+          ""
         ]
       },
       none => [
         "class ${cname} extends ${name} {}",
-        "",
+        ""
       ],
     }
-  })
-  doc_line + ["sealed class ${name} {}", ""] + case_lines
-}
-
-// ── Generate function wrapper ──
-
-local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
-  let fname = get_str(f, "name")
-  let params = get_arr(f, "params")
-  let ret = json.get(f, "return") ?? json.null()
-  let doc = get_str(f, "doc")
-  let dart_params = params |> list.map((p) => "${dart_type(json.get(p, "type") ?? json.null())} ${get_str(p, "name")}") |> list.join(", ")
-  let doc_line = if doc != "" then ["  /// ${doc}"] else []
-  let pack_lines = params |> list.flat_map((p) =>
-    gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "    ")
-  )
-  let unpack_lines = gen_unpack_expr(ret, types, "    ")
-
-  doc_line
-  + ["  static ${dart_type(ret)} ${fname}(${dart_params}) {",
-     "    final _tmp = Uint8List(8);",
-     "    final _bd = ByteData.sublistView(_tmp);",
-     "    final buf = <int>[];"]
-  + pack_lines
-  + ["    final argBytes = Uint8List.fromList(buf);",
-     "    final argPtr = calloc<Uint8>(argBytes.length);",
-     "    argPtr.asTypedList(argBytes.length).setAll(0, argBytes);",
-     "    final outPtr = calloc<Uint8>(4096);",
-     "    final rlen = _bridge_${fname}(argPtr.cast(), argBytes.length, outPtr.cast(), 4096);",
-     "    final _rbuf = outPtr.asTypedList(rlen);",
-     "    final _rd = ByteData.sublistView(Uint8List.fromList(_rbuf));",
-     "    var _pos = 0;",
-     "    calloc.free(argPtr);"]
-  + unpack_lines
-  + ["    calloc.free(outPtr);",
-     "    return _v;",
-     "  }",
-     ""]
+  });
+  doc_line + [
+    "sealed class ${name} {}",
+    ""
+  ] + case_lines
 }
 
 // ── Main ──
+local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
+  let fname = get_str(f, "name");
+  let params = get_arr(f, "params");
+  let ret = json.get(f, "return") ?? json.null();
+  let doc = get_str(f, "doc");
+  let dart_params = params |> list.map((p) => "${dart_type(json.get(p, "type") ?? json.null())} ${get_str(p, "name")}") |> list.join(", ");
+  let doc_line = if doc != "" then [
+    "  /// ${doc}"
+  ]
+  else [];
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "    "));
+  let unpack_lines = gen_unpack_expr(ret, types, "    ");
+  doc_line + [
+    "  static ${dart_type(ret)} ${fname}(${dart_params}) {",
+    "    final _tmp = Uint8List(8);",
+    "    final _bd = ByteData.sublistView(_tmp);",
+    "    final buf = <int>[];"
+  ] + pack_lines + [
+    "    final argBytes = Uint8List.fromList(buf);",
+    "    final argPtr = calloc<Uint8>(argBytes.length);",
+    "    argPtr.asTypedList(argBytes.length).setAll(0, argBytes);",
+    "    final outPtr = calloc<Uint8>(4096);",
+    "    final rlen = _bridge_${fname}(argPtr.cast(), argBytes.length, outPtr.cast(), 4096);",
+    "    final _rbuf = outPtr.asTypedList(rlen);",
+    "    final _rd = ByteData.sublistView(Uint8List.fromList(_rbuf));",
+    "    var _pos = 0;",
+    "    calloc.free(argPtr);"
+  ] + unpack_lines + ["    calloc.free(outPtr);", "    return _v;", "  }", ""]
+}
 
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
-  let module_name = get_str(iface, "module")
-  let types = get_arr(iface, "types")
-  let functions = get_arr(iface, "functions")
-  let cap_module = string.to_upper(string.slice(module_name, 0, 1)) + string.slice(module_name, 1, string.len(module_name))
-
-  let header = """
-    // Auto-generated by almide-bridge
-    import 'dart:ffi';
-    import 'dart:typed_data';
-    import 'dart:convert' show utf8;
-    import 'dart:io' show Platform;
-    import 'package:ffi/ffi.dart';
-
-    """
+  let iface = json.parse(iface_json) ?? json.null();
+  let module_name = get_str(iface, "module");
+  let types = get_arr(iface, "types");
+  let functions = get_arr(iface, "functions");
+  let cap_module = string.to_upper(string.slice(module_name, 0, 1)) + string.slice(module_name, 1, string.len(module_name));
+  let header = "// Auto-generated by almide-bridge\nimport 'dart:ffi';\nimport 'dart:typed_data';\nimport 'dart:convert' show utf8;\nimport 'dart:io' show Platform;\nimport 'package:ffi/ffi.dart';\n";
   let type_defs = types |> list.flat_map((t) => {
-    let name = get_str(t, "name")
-    let kind = json.get(t, "kind") ?? json.null()
+    let name = get_str(t, "name");
+    let kind = json.get(t, "kind") ?? json.null();
     match get_kind(kind) {
-      "record"  => gen_record_class(name, get_arr(kind, "fields"), t),
+      "record" => gen_record_class(name, get_arr(kind, "fields"), t),
       "variant" => gen_variant_classes(name, get_arr(kind, "cases"), t),
-      _         => [],
+      _ => [],
     }
-  })
-  let ffi_setup = """
-    // ── FFI setup ──
-
-    typedef _BridgeNative = Int32 Function(Pointer<Uint8>, Int32, Pointer<Uint8>, Int32);
-    typedef _BridgeDart = int Function(Pointer<Uint8>, int, Pointer<Uint8>, int);
-
-    final _lib = () {
-      final name = 'libalmide_${module_name}';
-      if (Platform.isMacOS) return DynamicLibrary.open('$name.dylib');
-      if (Platform.isLinux) return DynamicLibrary.open('$name.so');
-      if (Platform.isWindows) return DynamicLibrary.open('$name.dll');
-      throw UnsupportedError('Unsupported platform');
-    }();
-
-    """
+  });
+  let ffi_setup = "// ── FFI setup ──\n\ntypedef _BridgeNative = Int32 Function(Pointer<Uint8>, Int32, Pointer<Uint8>, Int32);\ntypedef _BridgeDart = int Function(Pointer<Uint8>, int, Pointer<Uint8>, int);\n\nfinal _lib = () {\n  final name = 'libalmide_${module_name}';\n  if (Platform.isMacOS) return DynamicLibrary.open('$name.dylib');\n  if (Platform.isLinux) return DynamicLibrary.open('$name.so');\n  if (Platform.isWindows) return DynamicLibrary.open('$name.dll');\n  throw UnsupportedError('Unsupported platform');\n}();\n";
   let fn_lookups = functions |> list.map((f) => {
-    let fname = get_str(f, "name")
+    let fname = get_str(f, "name");
     "final _bridge_${fname} = _lib.lookupFunction<_BridgeNative, _BridgeDart>('bridge_${fname}');"
-  })
-  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types))
-
-  ([header] + type_defs + [ffi_setup] + fn_lookups + ["", "class ${cap_module} {"] + fn_defs + ["}"]) |> list.join("\n")
+  });
+  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types));
+  ([header] + type_defs + [ffi_setup] + fn_lookups + [
+    "",
+    "class ${cap_module} {"
+  ] + fn_defs + ["}"]) |> list.join("\n")
 }

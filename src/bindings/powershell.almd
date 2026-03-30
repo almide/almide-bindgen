@@ -7,263 +7,255 @@
 // Records become PSCustomObject, variants become PSCustomObject with Tag.
 import json
 import self as bindgen
+import json
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)
+
 local fn get_arr(v: Value, key: String) -> List[Value] = bindgen.get_arr(v, key)
+
 local fn get_kind(v: Value) -> String = bindgen.get_kind(v)
+
 local fn get_type(v: Value) -> Value = bindgen.get_type(v)
+
 local fn find_type_def(name: String, types: List[Value]) -> Value = bindgen.find_type_def(name, types)
+
 local fn is_record(name: String, types: List[Value]) -> Bool = bindgen.is_record(name, types)
-local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── PowerShell type mapping ──
-
-local fn ps_type(ty: Value) -> String =
-  match get_kind(ty) {
-    "float"  => "[double]",
-    "int"    => "[long]",
-    "string" => "[string]",
-    "bool"   => "[bool]",
-    "named"  => "[PSCustomObject]",
-    "option" => "[object]",
-    "list"   => "[array]",
-    _        => "[object]",
-  }
+local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Pack code generation ──
-
-local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int" => [
-      "${indent}$$_b = [System.BitConverter]::GetBytes([long](${expr}))",
-      "${indent}[Array]::Reverse($$_b)",
-      "${indent}$$buf.AddRange($$_b)",
-    ],
-    "float" => [
-      "${indent}$$_b = [System.BitConverter]::GetBytes([double](${expr}))",
-      "${indent}[Array]::Reverse($$_b)",
-      "${indent}$$buf.AddRange($$_b)",
-    ],
-    "bool" => ["${indent}$$buf.Add([byte]$(if (${expr}) { 1 } else { 0 }))"],
-    "string" => [
-      "${indent}$$_sb = [System.Text.Encoding]::UTF8.GetBytes(${expr})",
-      "${indent}$$_lb = [System.BitConverter]::GetBytes([uint32]$$_sb.Length)",
-      "${indent}[Array]::Reverse($$_lb)",
-      "${indent}$$buf.AddRange($$_lb)",
-      "${indent}$$buf.AddRange($$_sb)",
-    ],
-    "named" => gen_pack_named(expr, ty, types, indent),
-    _ => ["${indent}# unknown pack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    fields |> list.flat_map((f) => gen_pack_expr("(${expr}).${get_str(f, "name")}", get_type(f), types, indent))
-  }
-  else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
-  else ["${indent}# unknown named type: ${name}"]
+local fn ps_type(ty: Value) -> String = match get_kind(ty) {
+  "float" => "[double]",
+  "int" => "[long]",
+  "string" => "[string]",
+  "bool" => "[bool]",
+  "named" => "[PSCustomObject]",
+  "option" => "[object]",
+  "list" => "[array]",
+  _ => "[object]",
 }
 
-local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
-  cases
-    |> list.enumerate
-    |> list.flat_map((entry) => {
-      let (idx, case) = entry
-      let cname = get_str(case, "name")
-      let cond = if idx == 0 then "if" else "elseif"
-      let header = [
-        "${indent}${cond} ((${expr}).Tag -eq '${cname}') {",
-        "${indent}    $$_tb = [System.BitConverter]::GetBytes([uint32]${int.to_string(idx)})",
-        "${indent}    [Array]::Reverse($$_tb)",
-        "${indent}    $$buf.AddRange($$_tb)",
-      ]
-      let payload_lines = match json.get(case, "payload") {
-        some(pl) => if get_kind(pl) == "tuple" then
-          get_arr(pl, "fields")
-            |> list.enumerate
-            |> list.flat_map((pe) => {
-              let (pi, pf) = pe
-              gen_pack_expr("(${expr}).Values[${int.to_string(pi)}]", pf, types, indent + "    ")
-            })
-          else [],
-        none => [],
-      }
-      header + payload_lines + ["${indent}}"]
-    })
+local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}$$_b = [System.BitConverter]::GetBytes([long](${expr}))",
+    "${indent}[Array]::Reverse($$_b)",
+    "${indent}$$buf.AddRange($$_b)"
+  ],
+  "float" => [
+    "${indent}$$_b = [System.BitConverter]::GetBytes([double](${expr}))",
+    "${indent}[Array]::Reverse($$_b)",
+    "${indent}$$buf.AddRange($$_b)"
+  ],
+  "bool" => [
+    "${indent}$$buf.Add([byte]$(if (${expr}) { 1 } else { 0 }))"
+  ],
+  "string" => [
+    "${indent}$$_sb = [System.Text.Encoding]::UTF8.GetBytes(${expr})",
+    "${indent}$$_lb = [System.BitConverter]::GetBytes([uint32]$$_sb.Length)",
+    "${indent}[Array]::Reverse($$_lb)",
+    "${indent}$$buf.AddRange($$_lb)",
+    "${indent}$$buf.AddRange($$_sb)"
+  ],
+  "named" => gen_pack_named(expr, ty, types, indent),
+  _ => [
+    "${indent}# unknown pack type: ${get_kind(ty)}"
+  ],
+}
+
+local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    fields |> list.flat_map((f) => gen_pack_expr("(${expr}).${get_str(f, "name")}", get_type(f), types, indent))
+  } else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
+  else [
+    "${indent}# unknown named type: ${name}"
+  ]
 }
 
 // ── Unpack code generation ──
+local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
+  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases");
+  cases |> list.enumerate |> list.flat_map((entry) => {
+    let (idx, case) = entry;
+    let cname = get_str(case, "name");
+    let cond = if idx == 0 then "if" else "elseif";
+    let header = [
+      "${indent}${cond} ((${expr}).Tag -eq '${cname}') {",
+      "${indent}    $$_tb = [System.BitConverter]::GetBytes([uint32]${int.to_string(idx)})",
+      "${indent}    [Array]::Reverse($$_tb)",
+      "${indent}    $$buf.AddRange($$_tb)"
+    ];
+    let payload_lines = match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then get_arr(pl, "fields") |> list.enumerate |> list.flat_map((pe) => {
+        let (pi, pf) = pe;
+        gen_pack_expr("(${expr}).Values[${int.to_string(pi)}]", pf, types, indent + "    ")
+      })
+      else [],
+      none => [],
+    };
+    header + payload_lines + [
+      "${indent}}"
+    ]
+  })
+}
 
-local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] =
-  match get_kind(ty) {
-    "int" => [
-      "${indent}$$_b = $$out[$$pos..($$pos+7)]; [Array]::Reverse($$_b)",
-      "${indent}$$_v = [System.BitConverter]::ToInt64($$_b, 0); $$pos += 8",
-    ],
-    "float" => [
-      "${indent}$$_b = $$out[$$pos..($$pos+7)]; [Array]::Reverse($$_b)",
-      "${indent}$$_v = [System.BitConverter]::ToDouble($$_b, 0); $$pos += 8",
-    ],
-    "bool" => ["${indent}$$_v = $$out[$$pos] -ne 0; $$pos += 1"],
-    "string" => [
-      "${indent}$$_lb = $$out[$$pos..($$pos+3)]; [Array]::Reverse($$_lb)",
-      "${indent}$$_slen = [System.BitConverter]::ToUInt32($$_lb, 0); $$pos += 4",
-      "${indent}$$_v = [System.Text.Encoding]::UTF8.GetString($$out, $$pos, $$_slen); $$pos += $$_slen",
-    ],
-    "named" => gen_unpack_named(ty, types, indent),
-    _ => ["${indent}# unknown unpack type: ${get_kind(ty)}"],
-  }
-
-local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
-  let name = get_str(ty, "name")
-  if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
-    let unpack_lines = fields |> list.flat_map((f) => {
-      let fname = get_str(f, "name")
-      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "$$_v", "$$_f_${fname}"))
-    })
-    let ctor_props = fields |> list.map((f2) => "${get_str(f2, "name")} = $$_f_${get_str(f2, "name")}") |> list.join("; ")
-    unpack_lines + ["${indent}$$_v = [PSCustomObject]@{ ${ctor_props} }"]
-  } else ["${indent}# unknown named type: ${name}"]
+local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "${indent}$$_b = $$out[$$pos..($$pos+7)]; [Array]::Reverse($$_b)",
+    "${indent}$$_v = [System.BitConverter]::ToInt64($$_b, 0); $$pos += 8"
+  ],
+  "float" => [
+    "${indent}$$_b = $$out[$$pos..($$pos+7)]; [Array]::Reverse($$_b)",
+    "${indent}$$_v = [System.BitConverter]::ToDouble($$_b, 0); $$pos += 8"
+  ],
+  "bool" => [
+    "${indent}$$_v = $$out[$$pos] -ne 0; $$pos += 1"
+  ],
+  "string" => [
+    "${indent}$$_lb = $$out[$$pos..($$pos+3)]; [Array]::Reverse($$_lb)",
+    "${indent}$$_slen = [System.BitConverter]::ToUInt32($$_lb, 0); $$pos += 4",
+    "${indent}$$_v = [System.Text.Encoding]::UTF8.GetString($$out, $$pos, $$_slen); $$pos += $$_slen"
+  ],
+  "named" => gen_unpack_named(ty, types, indent),
+  _ => [
+    "${indent}# unknown unpack type: ${get_kind(ty)}"
+  ],
 }
 
 // ── Generate record factory ──
-
-local fn gen_record_factory(name: String, fields: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let props = fields |> list.map((f) => "${get_str(f, "name")} = $$${get_str(f, "name")}") |> list.join("; ")
-  let doc_line = if doc != "" then ["<#\n.SYNOPSIS\n    ${doc}\n#>"] else []
-  let param_lines = fields |> list.map((f) => {
-    let fname = get_str(f, "name")
-    let ftype = get_type(f)
-    "        ${ps_type(ftype)}$$${fname},"
-  })
-
-  doc_line
-  + ["function New-${name} {",
-     "    param("]
-  + param_lines
-  + ["    )",
-     "    [PSCustomObject]@{ ${props} }",
-     "}",
-     ""]
+local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
+  let name = get_str(ty, "name");
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    let unpack_lines = fields |> list.flat_map((f) => {
+      let fname = get_str(f, "name");
+      gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "$$_v", "$$_f_${fname}"))
+    });
+    let ctor_props = fields |> list.map((f2) => "${get_str(f2, "name")} = $$_f_${get_str(f2, "name")}") |> list.join("; ");
+    unpack_lines + [
+      "${indent}$$_v = [PSCustomObject]@{ ${ctor_props} }"
+    ]
+  } else [
+    "${indent}# unknown named type: ${name}"
+  ]
 }
 
 // ── Generate variant factory ──
+local fn gen_record_factory(name: String, fields: List[Value], type_def: Value) -> List[String] = {
+  let doc = get_str(type_def, "doc");
+  let props = fields |> list.map((f) => "${get_str(f, "name")} = $$${get_str(f, "name")}") |> list.join("; ");
+  let doc_line = if doc != "" then [
+    "<#\n.SYNOPSIS\n    ${doc}\n#>"
+  ]
+  else [];
+  let param_lines = fields |> list.map((f) => {
+    let fname = get_str(f, "name");
+    let ftype = get_type(f);
+    "        ${ps_type(ftype)}$$${fname},"
+  });
+  doc_line + [
+    "function New-${name} {",
+    "    param("
+  ] + param_lines + [
+    "    )",
+    "    [PSCustomObject]@{ ${props} }",
+    "}",
+    ""
+  ]
+}
 
+// ── Generate function wrapper ──
 local fn gen_variant_factory(name: String, cases: List[Value], type_def: Value) -> List[String] = {
-  let doc = get_str(type_def, "doc")
-  let doc_line = if doc != "" then ["# ${doc}"] else []
+  let doc = get_str(type_def, "doc");
+  let doc_line = if doc != "" then [
+    "# ${doc}"
+  ]
+  else [];
   let ctor_lines = cases |> list.flat_map((case) => {
-    let cname = get_str(case, "name")
+    let cname = get_str(case, "name");
     let ctor = match json.get(case, "payload") {
       some(pl) => {
-        if get_kind(pl) == "tuple" then
-          match list.len(get_arr(pl, "fields")) {
-            1 => [
-              "function New-${name}${cname}($$value) {",
-              "    [PSCustomObject]@{ Tag = '${cname}'; Values = @($$value) }",
-              "}",
-            ],
-            2 => [
-              "function New-${name}${cname}($$v0, $$v1) {",
-              "    [PSCustomObject]@{ Tag = '${cname}'; Values = @($$v0, $$v1) }",
-              "}",
-            ],
-            _ => [],
-          }
-        else []
+        if get_kind(pl) == "tuple" then match list.len(get_arr(pl, "fields")) {
+          1 => [
+            "function New-${name}${cname}($$value) {",
+            "    [PSCustomObject]@{ Tag = '${cname}'; Values = @($$value) }",
+            "}"
+          ],
+          2 => [
+            "function New-${name}${cname}($$v0, $$v1) {",
+            "    [PSCustomObject]@{ Tag = '${cname}'; Values = @($$v0, $$v1) }",
+            "}"
+          ],
+          _ => [],
+        } else []
       },
       none => [
         "function New-${name}${cname} {",
         "    [PSCustomObject]@{ Tag = '${cname}'; Values = @() }",
-        "}",
+        "}"
       ],
-    }
+    };
     ctor + [""]
-  })
-
+  });
   doc_line + ctor_lines
 }
 
-// ── Generate function wrapper ──
-
+// ── Public API ──
 local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
-  let fname = get_str(f, "name")
-  let params = get_arr(f, "params")
-  let ret = json.get(f, "return") ?? json.null()
-  let doc = get_str(f, "doc")
-  let doc_line = if doc != "" then ["<#\n.SYNOPSIS\n    ${doc}\n#>"] else []
+  let fname = get_str(f, "name");
+  let params = get_arr(f, "params");
+  let ret = json.get(f, "return") ?? json.null();
+  let doc = get_str(f, "doc");
+  let doc_line = if doc != "" then [
+    "<#\n.SYNOPSIS\n    ${doc}\n#>"
+  ]
+  else [];
   let param_lines = params |> list.map((p) => {
-    let pname = get_str(p, "name")
-    let ptype = json.get(p, "type") ?? json.null()
+    let pname = get_str(p, "name");
+    let ptype = json.get(p, "type") ?? json.null();
     "        ${ps_type(ptype)}$$${pname},"
-  })
-  let pack_lines = params |> list.flat_map((p) =>
-    gen_pack_expr("$$${get_str(p, "name")}", json.get(p, "type") ?? json.null(), types, "    ")
-  )
-  let unpack_lines = gen_unpack_expr(ret, types, "    ")
-
-  doc_line
-  + ["function Invoke-${fname} {",
-     "    param("]
-  + param_lines
-  + ["    )",
-     "    $$buf = [System.Collections.Generic.List[byte]]::new()"]
-  + pack_lines
-  + ["    $$args = $$buf.ToArray()",
-     "    $$out = New-Object byte[] 4096",
-     "    $$rlen = [Bridge]::bridge_${fname}($$args, $$args.Length, $$out, 4096)",
-     "    $$out = $$out[0..($$rlen-1)]",
-     "    $$pos = 0"]
-  + unpack_lines
-  + ["    return $$_v",
-     "}",
-     ""]
+  });
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr("$$${get_str(p, "name")}", json.get(p, "type") ?? json.null(), types, "    "));
+  let unpack_lines = gen_unpack_expr(ret, types, "    ");
+  doc_line + [
+    "function Invoke-${fname} {",
+    "    param("
+  ] + param_lines + [
+    "    )",
+    "    $$buf = [System.Collections.Generic.List[byte]]::new()"
+  ] + pack_lines + [
+    "    $$args = $$buf.ToArray()",
+    "    $$out = New-Object byte[] 4096",
+    "    $$rlen = [Bridge]::bridge_${fname}($$args, $$args.Length, $$out, 4096)",
+    "    $$out = $$out[0..($$rlen-1)]",
+    "    $$pos = 0"
+  ] + unpack_lines + ["    return $$_v", "}", ""]
 }
 
-// ── Public API ──
-
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
-  let module_name = get_str(iface, "module")
-  let types = get_arr(iface, "types")
-  let functions = get_arr(iface, "functions")
-
-  let header = """
-    # Auto-generated by almide-bridge
-    # Module: ${module_name}
-
-    $$_dllPath = Join-Path $$PSScriptRoot "almide_${module_name}.dll"
-
-    """
-  let add_type_block = ['Add-Type -TypeDefinition @"',
-     "using System;",
-     "using System.Runtime.InteropServices;",
-     "public static class Bridge {"]
-    + (functions |> list.flat_map((f) => {
-        let fname = get_str(f, "name")
-        [
-          "    [DllImport(\"almide_${module_name}\")]",
-          "    public static extern int bridge_${fname}(byte[] args, int argsLen, byte[] outBuf, int outCap);",
-        ]
-      }))
-    + ["}",
-       '"@',
-       ""]
+  let iface = json.parse(iface_json) ?? json.null();
+  let module_name = get_str(iface, "module");
+  let types = get_arr(iface, "types");
+  let functions = get_arr(iface, "functions");
+  let header = "# Auto-generated by almide-bridge\n# Module: ${module_name}\n\n$$_dllPath = Join-Path $$PSScriptRoot \"almide_${module_name}.dll\"\n";
+  let add_type_block = ['Add-Type -TypeDefinition @"', "using System;", "using System.Runtime.InteropServices;", "public static class Bridge {"] + (functions |> list.flat_map((f) => {
+    let fname = get_str(f, "name");
+    [
+      "    [DllImport(\"almide_${module_name}\")]",
+      "    public static extern int bridge_${fname}(byte[] args, int argsLen, byte[] outBuf, int outCap);"
+    ]
+  })) + ["}", '"@', ""];
   let type_defs = types |> list.flat_map((t) => {
-    let name = get_str(t, "name")
-    let kind = json.get(t, "kind") ?? json.null()
+    let name = get_str(t, "name");
+    let kind = json.get(t, "kind") ?? json.null();
     match get_kind(kind) {
-      "record"  => gen_record_factory(name, get_arr(kind, "fields"), t),
+      "record" => gen_record_factory(name, get_arr(kind, "fields"), t),
       "variant" => gen_variant_factory(name, get_arr(kind, "cases"), t),
-      _         => [],
+      _ => [],
     }
-  })
-  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types))
-
+  });
+  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types));
   ([header] + add_type_block + type_defs + fn_defs) |> list.join("\n")
 }
