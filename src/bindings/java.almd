@@ -3,6 +3,7 @@
 // Usage: almide run java.almd -- interface.json
 //
 // Produces a .java file using JNA for FFI and ByteBuffer for serialization.
+import json
 import self as bindgen
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)

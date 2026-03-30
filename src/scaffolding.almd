@@ -1,5 +1,6 @@
 // scaffolding.almd — Generate Rust FFI scaffolding with byte buffer protocol
 
+import json
 import self as bindgen
 
 // ── Helpers (delegate to shared mod.almd) ──

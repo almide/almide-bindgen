@@ -4,6 +4,7 @@
 //
 // Produces a .scala file using JNA for FFI and java.nio.ByteBuffer for serialization.
 // Records become case classes, variants become sealed traits + case classes.
+import json
 import self as bindgen
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)

@@ -8,6 +8,8 @@
 //   bindgen.bindings.go.generate(iface_json) -> String
 //   ... (14 languages)
 
+import json
+
 // ── Shared helpers ──
 
 fn get_str(v: Value, key: String) -> String =

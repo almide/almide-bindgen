@@ -3,6 +3,7 @@
 // Usage: almide run dart.almd -- interface.json
 //
 // Produces a .dart file using dart:ffi for FFI and ByteData for big-endian serialization.
+import json
 import self as bindgen
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)

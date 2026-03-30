@@ -4,6 +4,7 @@
 //
 // Produces a .h header with struct definitions, function declarations, and
 // helper macros/inline functions for packing/unpacking.
+import json
 import self as bindgen
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)

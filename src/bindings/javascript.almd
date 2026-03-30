@@ -4,6 +4,7 @@
 //
 // Produces a .js file using koffi for FFI and Buffer for serialization,
 // plus JSDoc type annotations for TypeScript compatibility.
+import json
 import self as bindgen
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)

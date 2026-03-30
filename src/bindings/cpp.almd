@@ -4,6 +4,7 @@
 //
 // Produces a .hpp header wrapping the C bridge functions in a C++ namespace
 // with classes for records/variants and std::vector<uint8_t> for serialization.
+import json
 import self as bindgen
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)

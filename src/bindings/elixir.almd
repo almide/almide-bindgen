@@ -3,6 +3,7 @@
 // Usage: almide run elixir.almd -- interface.json
 //
 // Produces a .ex file using Erlang NIF for FFI and binary pattern matching for serialization.
+import json
 import self as bindgen
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)

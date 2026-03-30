@@ -3,6 +3,7 @@
 // Usage: almide run csharp.almd -- interface.json
 //
 // Produces a .cs file using P/Invoke for FFI and manual big-endian serialization.
+import json
 import self as bindgen
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)

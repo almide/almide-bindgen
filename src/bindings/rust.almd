@@ -4,6 +4,7 @@
 //
 // Produces a .rs module that calls the bridge functions via FFI.
 // Records become structs, variants become enums, Vec<u8> for serialization.
+import json
 import self as bindgen
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)

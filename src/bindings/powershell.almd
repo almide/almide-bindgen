@@ -5,6 +5,7 @@
 // Produces a .ps1/.psm1 file using Add-Type with DllImport for FFI
 // and [System.BitConverter] for serialization.
 // Records become PSCustomObject, variants become PSCustomObject with Tag.
+import json
 import self as bindgen
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)

@@ -3,6 +3,7 @@
 // Usage: almide run swift.almd -- interface.json
 //
 // Produces a .swift file using C header import for FFI and Data for serialization.
+import json
 import self as bindgen
 
 local fn get_str(v: Value, key: String) -> String = bindgen.get_str(v, key)
