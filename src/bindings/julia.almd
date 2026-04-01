@@ -122,7 +122,7 @@ local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List
       let fname = get_str(f, "name");
       gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
     });
-    let ctor_args = fields.map((f2) => "_f_${get_str(f2, "name")}").join(", ");
+    let ctor_args = (fields |> list.map((f2) => "_f_${get_str(f2, "name")}")) |> list.join(", ");
     unpack_lines + [
       "${indent}_v = ${name}(${ctor_args})"
     ]
@@ -184,7 +184,7 @@ local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List
   let params = get_arr(f, "params");
   let ret = json.get(f, "return") ?? json.null();
   let doc = get_str(f, "doc");
-  let jl_params = params.map((p) => "${get_str(p, "name")}::${jl_type(json.get(p, "type") ?? json.null())}").join(", ");
+  let jl_params = (params |> list.map((p) => "${get_str(p, "name")}::${jl_type(json.get(p, "type") ?? json.null())}")) |> list.join(", ");
   let doc_line = if doc != "" then [
     "    \"\"\"${doc}\"\"\""
   ]
@@ -221,16 +221,16 @@ fn generate(iface_json: String) -> String = {
     let name = get_str(t, "name");
     let kind = json.get(t, "kind") ?? json.null();
     match get_kind(kind) {
-      "variant" => [name] + get_arr(kind, "cases").map((case) => get_str(case, "name")),
+      "variant" => [name] + (get_arr(kind, "cases") |> list.map((case) => get_str(case, "name"))),
       _ => [name],
     }
-  }) + functions.map((f) => get_str(f, "name"));
+  }) + (functions |> list.map((f) => get_str(f, "name")));
   let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types));
   let body = type_defs + [
-    "export ${export_names.join(", ")}",
+    "export ${export_names |> list.join(", ")}",
     ""
   ] + fn_defs + [
     "end # module ${cap_module}"
   ];
-  header + "\n\n" + body.join("\n")
+  header + "\n\n" + (body |> list.join("\n"))
 }

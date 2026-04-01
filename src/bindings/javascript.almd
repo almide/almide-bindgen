@@ -139,9 +139,9 @@ local fn gen_record_factory(name: String, fields: List[Value], type_def: Value) 
     "/** ${doc} */"
   ]
   else [];
-  let field_names = fields.map((f) => get_str(f, "name"));
-  let jsdoc_params = fields.map((f) => " * @param {${js_type(get_type(f))}} ${get_str(f, "name")}").join("\n");
-  let params = field_names.join(", ");
+  let field_names = fields |> list.map((f) => get_str(f, "name"));
+  let jsdoc_params = (fields |> list.map((f) => " * @param {${js_type(get_type(f))}} ${get_str(f, "name")}")) |> list.join("\n");
+  let params = field_names |> list.join(", ");
   doc_line + [
     "/**",
     jsdoc_params,
@@ -150,7 +150,7 @@ local fn gen_record_factory(name: String, fields: List[Value], type_def: Value) 
   ] + [
     "function make${name}(${params}) {"
   ] + [
-    "  return { ${field_names.map((n) => "${n}").join(", ")} };"
+    "  return { ${(field_names |> list.map((n) => "${n}")) |> list.join(", ")} };"
   ] + ["}", ""]
 }
 
@@ -163,7 +163,7 @@ local fn gen_variant_factory(name: String, cases: List[Value], type_def: Value) 
   else [];
   let case_lines = cases |> list.flat_map((case) => {
     let cname = get_str(case, "name");
-    let lower_name = cname.to_lower();
+    let lower_name = string.to_lower(cname);
     match json.get(case, "payload") {
       some(pl) => {
         if get_kind(pl) == "tuple" then match list.len(get_arr(pl, "fields")) {
@@ -192,12 +192,12 @@ local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List
   let params = get_arr(f, "params");
   let ret = json.get(f, "return") ?? json.null();
   let doc = get_str(f, "doc");
-  let js_params = params.map((p) => get_str(p, "name")).join(", ");
+  let js_params = (params |> list.map((p) => get_str(p, "name"))) |> list.join(", ");
   let doc_line = if doc != "" then [
     "/** ${doc} */"
   ]
   else [];
-  let jsdoc_params = params.map((p) => "/** @param {${js_type(json.get(p, "type") ?? json.null())}} ${get_str(p, "name")} */");
+  let jsdoc_params = params |> list.map((p) => "/** @param {${js_type(json.get(p, "type") ?? json.null())}} ${get_str(p, "name")} */");
   let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types));
   let unpack_lines = gen_unpack_expr(ret, types);
   doc_line + jsdoc_params + [
@@ -250,8 +250,8 @@ fn generate(iface_json: String) -> String = {
       "variant" => [name],
       _ => [],
     }
-  }) + functions.map((f) => get_str(f, "name"));
+  }) + (functions |> list.map((f) => get_str(f, "name")));
   (header + bridge_decls + [""] + type_defs + fn_defs + [
-    "module.exports = { ${exports.join(", ")} };"
+    "module.exports = { ${exports |> list.join(", ")} };"
   ]) |> list.join("\n")
 }
