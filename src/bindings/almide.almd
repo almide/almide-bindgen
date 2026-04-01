@@ -1,6 +1,6 @@
 // almide.almd — Generate Almide binding for calling compiled Almide libraries via shared library FFI
 //
-// The simplest generator: types are identity-mapped, functions become @extern declarations.
+// Uses @extern(c, ...) to call bridge_* functions, bytes module for pack/unpack.
 
 import json
 import self as bindgen
@@ -14,6 +14,10 @@ local fn get_kind(v: Value) -> String = bindgen.get_kind(v)
 local fn get_type(v: Value) -> Value = bindgen.get_type(v)
 
 local fn find_type_def(name: String, types: List[Value]) -> Value = bindgen.find_type_def(name, types)
+
+local fn is_record(name: String, types: List[Value]) -> Bool = bindgen.is_record(name, types)
+
+local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_variant(name, types)
 
 // ── Almide type rendering (identity mapping) ──
 
@@ -78,23 +82,187 @@ local fn gen_variant_type(name: String, cases: List[Value], type_def: Value) -> 
   doc_line + ["type ${name} = ${body}", ""]
 }
 
-// ── Function @extern declaration ──
+// ── Pack code generation ──
 
-local fn gen_function(f: Value, module_name: String) -> List[String] = {
+local fn gen_pack_expr(expr: String, ty: Value, types: List[Value]) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "bytes.write_i64_be(buf, ${expr})"
+  ],
+  "float" => [
+    "bytes.write_f64_be(buf, ${expr})"
+  ],
+  "bool" => [
+    "bytes.write_bool(buf, ${expr})"
+  ],
+  "string" => [
+    "bytes.write_string_be(buf, ${expr})"
+  ],
+  "named" => gen_pack_named(expr, ty, types),
+  _ => [
+    "// unknown pack type: ${get_kind(ty)}"
+  ],
+}
+
+local fn gen_pack_named(expr: String, ty: Value, types: List[Value]) -> List[String] = {
+  let name = get_str(ty, "name")
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
+    fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types))
+  } else if is_variant(name, types) then gen_pack_variant(expr, name, types)
+  else [
+    "// unknown named type: ${name}"
+  ]
+}
+
+local fn gen_pack_variant(expr: String, name: String, types: List[Value]) -> List[String] = {
+  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
+  let arms = cases |> list.enumerate |> list.map((entry) => {
+    let (idx, case) = entry
+    let cname = get_str(case, "name")
+    let payload_lines = match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then {
+        let pfields = get_arr(pl, "fields")
+        pfields |> list.enumerate |> list.flat_map((pe) => {
+          let (pi, pf) = pe
+          gen_pack_expr("_pv${int.to_string(pi)}", pf, types)
+        })
+      } else [],
+      none => [],
+    }
+    let pvars = match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then {
+        let pfields = get_arr(pl, "fields")
+        pfields |> list.enumerate |> list.map((pe) => "_pv${int.to_string(pe.0)}")
+      } else [],
+      none => [],
+    }
+    let pattern = if list.is_empty(pvars) then cname
+                  else "${cname}(${pvars |> list.join(", ")})"
+    let body = ["bytes.write_u32_be(buf, ${int.to_string(idx)})"] + payload_lines
+    "    ${pattern} => {\n${body |> list.map((l) => "      " + l) |> list.join("\n")}\n    }"
+  })
+  [
+    "match ${expr} {",
+  ] + arms + [
+    "  }"
+  ]
+}
+
+// ── Unpack code generation ──
+
+local fn gen_unpack_expr(ty: Value, types: List[Value]) -> List[String] = match get_kind(ty) {
+  "int" => [
+    "let _v = bytes.read_i64_be(out, pos)",
+    "pos = pos + 8"
+  ],
+  "float" => [
+    "let _v = bytes.read_f64_be(out, pos)",
+    "pos = pos + 8"
+  ],
+  "bool" => [
+    "let _v = bytes.read_bool(out, pos)",
+    "pos = pos + 1"
+  ],
+  "string" => [
+    "let _slen = bytes.read_u32_be(out, pos)",
+    "let _v = bytes.read_string_be(out, pos)",
+    "pos = pos + 4 + _slen"
+  ],
+  "named" => gen_unpack_named(ty, types),
+  "unit" => [
+    "let _v = ()"
+  ],
+  _ => [
+    "// unknown unpack type: ${get_kind(ty)}"
+  ],
+}
+
+local fn gen_unpack_named(ty: Value, types: List[Value]) -> List[String] = {
+  let name = get_str(ty, "name")
+  if is_record(name, types) then {
+    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
+    let field_unpacks = fields |> list.flat_map((f) => {
+      let fname = get_str(f, "name")
+      let lines = gen_unpack_expr(get_type(f), types) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
+      lines
+    })
+    let ctor_args = fields |> list.map((f) => "${get_str(f, "name")}: _f_${get_str(f, "name")}") |> list.join(", ")
+    field_unpacks + ["let _v = ${name} { ${ctor_args} }"]
+  } else if is_variant(name, types) then gen_unpack_variant(name, types)
+  else [
+    "// unknown named type: ${name}"
+  ]
+}
+
+local fn gen_unpack_variant(name: String, types: List[Value]) -> List[String] = {
+  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
+  let tag_line = [
+    "let _tag = bytes.read_u32_be(out, pos)",
+    "pos = pos + 4"
+  ]
+  let arms = cases |> list.enumerate |> list.map((entry) => {
+    let (idx, case) = entry
+    let cname = get_str(case, "name")
+    match json.get(case, "payload") {
+      some(pl) => if get_kind(pl) == "tuple" then {
+        let pfields = get_arr(pl, "fields")
+        let payload_unpacks = pfields |> list.enumerate |> list.flat_map((pe) => {
+          let (pi, pf) = pe
+          gen_unpack_expr(pf, types) |> list.map((l) => string.replace(l, "_v", "_pv${int.to_string(pi)}"))
+        })
+        let pvars = pfields |> list.enumerate |> list.map((pe) => "_pv${int.to_string(pe.0)}")
+        let body = payload_unpacks |> list.map((l) => "      " + l) |> list.join("\n")
+        "    ${int.to_string(idx)} => {\n${body}\n      ${cname}(${pvars |> list.join(", ")})\n    }"
+      } else "    ${int.to_string(idx)} => ${cname}",
+      none => "    ${int.to_string(idx)} => ${cname}",
+    }
+  })
+  tag_line + [
+    "let _v = match _tag {"
+  ] + arms + [
+    "    _ => panic(\"invalid variant tag\")",
+    "  }"
+  ]
+}
+
+// ── Function: @extern(c) bridge declaration + pack/unpack wrapper ──
+
+local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
   let fname = get_str(f, "name")
   let params = get_arr(f, "params")
   let ret = json.get(f, "return") ?? json.null()
   let doc = get_str(f, "doc")
   let doc_line = if doc != "" then ["/// ${doc}"] else []
+  let bridge_name = "bridge_${fname}"
+  let extern_name = "raw_bridge_${fname}"
   let param_strs = params |> list.map((p) => "${get_str(p, "name")}: ${almd_type(json.get(p, "type") ?? json.null())}")
   let param_body = param_strs |> list.join(", ")
   let ret_str = almd_type(ret)
-  let extern_name = "almide_${module_name}_${fname}"
-  doc_line + [
-    "@extern(lib: \"almide_${module_name}\", \"${extern_name}\")",
-    "fn ${fname}(${param_body}) -> ${ret_str}",
+
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types))
+  let unpack_lines = gen_unpack_expr(ret, types)
+
+  let bridge_decl = [
+    "@extern(c, \"almide_${module_name}\", \"${bridge_name}\")",
+    "fn ${extern_name}(args: RawPtr, args_len: Int, out: RawPtr, out_cap: Int) -> Int",
     ""
   ]
+
+  let wrapper = doc_line + [
+    "fn ${fname}(${param_body}) -> ${ret_str} = {"
+  ] + [
+    "  var buf = bytes.new(0)"
+  ] + (pack_lines |> list.map((l) => "  " + l)) + [
+    "  var out = bytes.new(4096)",
+    "  let _rlen = ${extern_name}(bytes.as_ptr(buf), bytes.len(buf), bytes.as_mut_ptr(out), 4096)",
+    "  var pos = 0"
+  ] + (unpack_lines |> list.map((l) => "  " + l)) + [
+    "  _v",
+    "}",
+    ""
+  ]
+
+  bridge_decl + wrapper
 }
 
 // ── Public API ──
@@ -107,6 +275,7 @@ fn generate(iface_json: String) -> String = {
   let header = [
     "// almide_${module_name} — auto-generated by almide-lander",
     "// Do not edit manually.",
+    "import bytes",
     ""
   ]
   let type_defs = types |> list.flat_map((t) => {
@@ -118,6 +287,6 @@ fn generate(iface_json: String) -> String = {
       _ => [],
     }
   })
-  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name))
+  let fn_defs = functions |> list.flat_map((f) => gen_function(f, module_name, types))
   (header + type_defs + fn_defs) |> list.join("\n")
 }
