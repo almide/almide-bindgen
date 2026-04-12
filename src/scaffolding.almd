@@ -25,7 +25,7 @@ local fn is_variant(name: String, types: List[Value]) -> Bool = bindgen.is_varia
 
 // ── Unpack code generation (bytes → Almide values) ──
 
-local fn gen_unpack(ty: Value, types: List[Value]) -> List[String] = match get_kind(ty) {
+fn gen_unpack(ty: Value, types: List[Value]) -> List[String] = match get_kind(ty) {
   "int" => [
     "let _v = bytes.read_i64_be(buf, pos)",
     "pos = pos + 8"
@@ -93,7 +93,7 @@ local fn gen_unpack_variant(name: String, types: List[Value]) -> List[String] = 
 
 // ── Pack code generation (Almide values → bytes) ──
 
-local fn gen_pack(expr: String, ty: Value, types: List[Value]) -> List[String] = match get_kind(ty) {
+fn gen_pack(expr: String, ty: Value, types: List[Value]) -> List[String] = match get_kind(ty) {
   "int" => ["bytes.write_i64_be(out, ${expr})"],
   "float" => ["bytes.write_f64_be(out, ${expr})"],
   "bool" => ["bytes.write_bool(out, ${expr})"],
@@ -143,7 +143,7 @@ local fn gen_pack_variant(expr: String, name: String, types: List[Value]) -> Lis
 
 // ── Generate @export(c) bridge function for one function ──
 
-local fn gen_scaffold_fn(f: Value, types: List[Value]) -> List[String] = {
+fn gen_scaffold_fn(f: Value, types: List[Value]) -> List[String] = {
   let fname = get_str(f, "name")
   let params = get_arr(f, "params")
   let ret = json.get(f, "return") ?? json.null()
@@ -172,7 +172,7 @@ local fn gen_scaffold_fn(f: Value, types: List[Value]) -> List[String] = {
 
 // ── Bridge alloc/free ──
 
-local fn gen_bridge_helpers() -> List[String] = [
+fn gen_bridge_helpers() -> List[String] = [
   "@export(c, \"bridge_alloc\")",
   "fn bridge_alloc(len: Int) -> RawPtr = bytes.as_mut_ptr(bytes.new(len))",
   "",

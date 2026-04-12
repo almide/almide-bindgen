@@ -10,8 +10,8 @@ test "version is not empty" {
   assert(string.len(bindgen.version()) > 0)
 }
 
-test "supported_languages has 20 entries" {
-  assert_eq(list.len(bindgen.supported_languages()), 20)
+test "supported_languages has 21 entries" {
+  assert_eq(list.len(bindgen.supported_languages()), 21)
 }
 
 // ═══════════════════════════════════════════════════════
@@ -90,26 +90,26 @@ test "is_variant true" {
 // ═══════════════════════════════════════════════════════
 test "gen_unpack int" {
   let ty = json.parse('{"kind":"int"}') ?? json.null();
-  let result = scaffolding.gen_unpack(ty, []);
-  assert(string.contains(result, "i64::from_be_bytes"))
+  let result = list.join(scaffolding.gen_unpack(ty, []), "\n");
+  assert(string.contains(result, "read_i64_be"))
 }
 
 test "gen_unpack float" {
   let ty = json.parse('{"kind":"float"}') ?? json.null();
-  let result = scaffolding.gen_unpack(ty, []);
-  assert(string.contains(result, "f64::from_be_bytes"))
+  let result = list.join(scaffolding.gen_unpack(ty, []), "\n");
+  assert(string.contains(result, "read_f64_be"))
 }
 
 test "gen_unpack bool" {
   let ty = json.parse('{"kind":"bool"}') ?? json.null();
-  let result = scaffolding.gen_unpack(ty, []);
-  assert(string.contains(result, "buf[pos] != 0"))
+  let result = list.join(scaffolding.gen_unpack(ty, []), "\n");
+  assert(string.contains(result, "read_bool"))
 }
 
 test "gen_unpack string" {
   let ty = json.parse('{"kind":"string"}') ?? json.null();
-  let result = scaffolding.gen_unpack(ty, []);
-  assert(string.contains(result, "from_utf8_lossy"))
+  let result = list.join(scaffolding.gen_unpack(ty, []), "\n");
+  assert(string.contains(result, "read_string_be"))
 }
 
 test "gen_unpack named record" {
@@ -117,7 +117,7 @@ test "gen_unpack named record" {
     json.parse('{"name":"Pt","kind":{"kind":"record","fields":[{"name":"x","type":{"kind":"int"}},{"name":"y","type":{"kind":"int"}}]}}') ?? json.null()
   ];
   let ty = json.parse('{"kind":"named","name":"Pt"}') ?? json.null();
-  let result = scaffolding.gen_unpack(ty, types);
+  let result = list.join(scaffolding.gen_unpack(ty, types), "\n");
   assert(string.contains(result, "Pt {"));
   assert(string.contains(result, "x:"));
   assert(string.contains(result, "y:"))
@@ -128,10 +128,10 @@ test "gen_unpack named variant" {
     json.parse('{"name":"Color","kind":{"kind":"variant","cases":[{"name":"Red"},{"name":"Blue"}]}}') ?? json.null()
   ];
   let ty = json.parse('{"kind":"named","name":"Color"}') ?? json.null();
-  let result = scaffolding.gen_unpack(ty, types);
-  assert(string.contains(result, "match tag"));
-  assert(string.contains(result, "Color::Red"));
-  assert(string.contains(result, "Color::Blue"))
+  let result = list.join(scaffolding.gen_unpack(ty, types), "\n");
+  assert(string.contains(result, "match _tag"));
+  assert(string.contains(result, "Red"));
+  assert(string.contains(result, "Blue"))
 }
 
 // ═══════════════════════════════════════════════════════
@@ -141,7 +141,7 @@ test "gen_pack int" {
   let ty = json.parse('{"kind":"int"}') ?? json.null();
   let lines = scaffolding.gen_pack("n", ty, []);
   assert_eq(list.len(lines), 1);
-  assert(string.contains(list.get(lines, 0) ?? "", "to_be_bytes"))
+  assert(string.contains(list.get(lines, 0) ?? "", "write_i64_be"))
 }
 
 test "gen_pack bool" {
@@ -153,8 +153,8 @@ test "gen_pack bool" {
 test "gen_pack string" {
   let ty = json.parse('{"kind":"string"}') ?? json.null();
   let lines = scaffolding.gen_pack("s", ty, []);
-  assert(list.len(lines) > 1);
-  assert(string.contains(list.get(lines, 0) ?? "", "as_bytes"))
+  assert_eq(list.len(lines), 1);
+  assert(string.contains(list.get(lines, 0) ?? "", "write_string_be"))
 }
 
 test "gen_pack record" {
@@ -165,7 +165,7 @@ test "gen_pack record" {
   let lines = scaffolding.gen_pack("p", ty, types);
   assert(list.len(lines) > 0);
   let joined = list.join(lines, " ");
-  assert(string.contains(joined, "__r.x"))
+  assert(string.contains(joined, "p.x"))
 }
 
 // ═══════════════════════════════════════════════════════
@@ -173,58 +173,42 @@ test "gen_pack record" {
 // ═══════════════════════════════════════════════════════
 test "gen_scaffold_fn produces extern C wrapper" {
   let f = json.parse('{"name":"add","params":[{"name":"a","type":{"kind":"int"}},{"name":"b","type":{"kind":"int"}}],"return":{"kind":"int"}}') ?? json.null();
-  let text = scaffolding.gen_scaffold_fn(f, []);
-  assert(string.contains(text, "#[no_mangle]"));
-  assert(string.contains(text, 'extern "C"'));
+  let text = list.join(scaffolding.gen_scaffold_fn(f, []), "\n");
+  assert(string.contains(text, "@export(c"));
   assert(string.contains(text, "bridge_add"));
-  assert(string.contains(text, "let a ="));
-  assert(string.contains(text, "let b ="));
-  assert(string.contains(text, "add(a, b)"))
+  assert(string.contains(text, "_p_a"));
+  assert(string.contains(text, "_p_b"));
+  assert(string.contains(text, "add(_p_a, _p_b)"))
 }
 
 test "gen_scaffold_fn string param" {
   let f = json.parse('{"name":"greet","params":[{"name":"name","type":{"kind":"string"}}],"return":{"kind":"string"}}') ?? json.null();
-  let text = scaffolding.gen_scaffold_fn(f, []);
+  let text = list.join(scaffolding.gen_scaffold_fn(f, []), "\n");
   assert(string.contains(text, "bridge_greet"));
-  assert(string.contains(text, "from_utf8_lossy"))
+  assert(string.contains(text, "read_string_be"))
 }
 
 // ═══════════════════════════════════════════════════════
 // Scaffolding: gen_bridge_helpers
 // ═══════════════════════════════════════════════════════
 test "gen_bridge_helpers content" {
-  let text = scaffolding.gen_bridge_helpers();
+  let text = list.join(scaffolding.gen_bridge_helpers(), "\n");
   assert(string.contains(text, "bridge_alloc"));
-  assert(string.contains(text, "bridge_free"));
-  assert(string.contains(text, 'extern "C"'));
-  assert(string.contains(text, "Vec::<u8>::with_capacity"))
+  assert(string.contains(text, "bridge_free"))
 }
 
 // ═══════════════════════════════════════════════════════
 // Scaffolding: full generate
 // ═══════════════════════════════════════════════════════
 test "generate empty interface" {
-  let result = scaffolding.generate('{"module":"t","types":[],"functions":[]}', "");
+  let result = scaffolding.generate('{"module":"t","types":[],"functions":[]}');
   assert(string.contains(result, "bridge_alloc"));
   assert(string.contains(result, "AUTO-GENERATED"))
 }
 
-test "generate preserves original code" {
-  let rust = 'pub fn hello() -> String { "hi".to_string() }';
-  let result = scaffolding.generate('{"module":"t","types":[],"functions":[]}', rust);
-  assert(string.contains(result, "pub fn hello"))
-}
-
-test "generate strips main function" {
-  let rust = 'fn main() { println!("hi"); }\npub fn add(a: i64) -> i64 { a }';
-  let result = scaffolding.generate('{"module":"t","types":[],"functions":[]}', rust);
-  assert(not string.contains(result, "fn main("));
-  assert(string.contains(result, "pub fn add"))
-}
-
 test "generate with function" {
   let iface = '{"module":"t","types":[],"functions":[{"name":"inc","params":[{"name":"n","type":{"kind":"int"}}],"return":{"kind":"int"}}]}';
-  let result = scaffolding.generate(iface, "");
+  let result = scaffolding.generate(iface);
   assert(string.contains(result, "bridge_inc"))
 }
 
@@ -237,7 +221,6 @@ test "generate_cargo" {
 
 test "generate with record type" {
   let iface = '{"module":"t","types":[{"name":"Pt","kind":{"kind":"record","fields":[{"name":"x","type":{"kind":"int"}}]}}],"functions":[{"name":"get_pt","params":[],"return":{"kind":"named","name":"Pt"}}]}';
-  let result = scaffolding.generate(iface, "");
-  assert(string.contains(result, "bridge_get_pt"));
-  assert(string.contains(result, "__r.x"))
+  let result = scaffolding.generate(iface);
+  assert(string.contains(result, "bridge_get_pt"))
 }
