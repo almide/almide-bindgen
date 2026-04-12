@@ -9,3 +9,4 @@ __pycache__/
 *.whl
 Cargo.lock
 .almide/
+.almide/cache/
