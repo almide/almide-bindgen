@@ -44,7 +44,7 @@ local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: Stri
 local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
   let name = get_str(ty, "name");
   if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    let fields = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "fields");
     fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types, indent))
   } else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
   else [
@@ -54,7 +54,7 @@ local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: Str
 
 // ── Unpack code generation ──
 local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases");
+  let cases = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "cases");
   let case_lines = cases |> list.enumerate |> list.flat_map((entry) => {
     let (idx, case) = entry;
     let cname = get_str(case, "name");
@@ -63,7 +63,7 @@ local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent
       "${indent}${cond} ${expr}.tag == \"${cname}\" then",
       "${indent}  pack_u32(buf, ${int.to_string(idx)})"
     ];
-    let payload_lines = match json.get(case, "payload") {
+    let payload_lines = match value.get(case, "payload") {
       some(pl) => if get_kind(pl) == "tuple" then get_arr(pl, "fields") |> list.enumerate |> list.flat_map((pe) => {
         let (pi, pf) = pe;
         gen_pack_expr("${expr}.values[${int.to_string(pi + 1)}]", pf, types, indent + "  ")
@@ -101,7 +101,7 @@ local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[
 local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
   let name = get_str(ty, "name");
   if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    let fields = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "fields");
     let unpack_lines = fields |> list.flat_map((f) => {
       let fname = get_str(f, "name");
       gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
@@ -142,7 +142,7 @@ local fn gen_variant_ctors(name: String, cases: List[Value], type_def: Value) ->
   else [];
   let ctor_lines = cases |> list.flat_map((case) => {
     let cname = get_str(case, "name");
-    match json.get(case, "payload") {
+    match value.get(case, "payload") {
       some(pl) => {
         if get_kind(pl) == "tuple" then {
           let pfields = get_arr(pl, "fields");
@@ -176,14 +176,14 @@ local fn gen_variant_ctors(name: String, cases: List[Value], type_def: Value) ->
 local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
   let fname = get_str(f, "name");
   let params = get_arr(f, "params");
-  let ret = json.get(f, "return") ?? json.null();
+  let ret = value.get(f, "return") ?? value.null();
   let doc = get_str(f, "doc");
   let lua_params = params |> list.map((p) => get_str(p, "name")) |> list.join(", ");
   let doc_line = if doc != "" then [
     "--- ${doc}"
   ]
   else [];
-  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "  "));
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), value.get(p, "type") ?? value.null(), types, "  "));
   let unpack_lines = gen_unpack_expr(ret, types, "  ");
   doc_line + [
     "function M.${fname}(${lua_params})",
@@ -198,7 +198,7 @@ local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List
 }
 
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null();
+  let iface = json.parse(iface_json) ?? value.null();
   let module_name = get_str(iface, "module");
   let types = get_arr(iface, "types");
   let functions = get_arr(iface, "functions");
@@ -220,7 +220,7 @@ fn generate(iface_json: String) -> String = {
   let helpers = "\n-- Serialization helpers\nlocal function pack_i64(buf, v)\n  local tmp = ffi.new('int64_t[1]', v)\n  local p = ffi.cast('uint8_t*', tmp)\n  local bytes = {}\n  for i = 7, 0, -1 do bytes[#bytes + 1] = string.char(p[i]) end\n  buf[#buf + 1] = table.concat(bytes)\nend\n\nlocal function pack_f64(buf, v)\n  local tmp = ffi.new('double[1]', v)\n  local p = ffi.cast('uint8_t*', tmp)\n  local bytes = {}\n  for i = 7, 0, -1 do bytes[#bytes + 1] = string.char(p[i]) end\n  buf[#buf + 1] = table.concat(bytes)\nend\n\nlocal function pack_u32(buf, v)\n  local tmp = ffi.new('uint32_t[1]', v)\n  local p = ffi.cast('uint8_t*', tmp)\n  local bytes = {}\n  for i = 3, 0, -1 do bytes[#bytes + 1] = string.char(p[i]) end\n  buf[#buf + 1] = table.concat(bytes)\nend\n\nlocal function pack_str(buf, s)\n  pack_u32(buf, #s)\n  buf[#buf + 1] = s\nend\n\nlocal function unpack_i64(buf, pos)\n  local tmp = ffi.new('uint8_t[8]')\n  for i = 0, 7 do tmp[7 - i] = string.byte(buf, pos + i) end\n  return tonumber(ffi.cast('int64_t*', tmp)[0])\nend\n\nlocal function unpack_f64(buf, pos)\n  local tmp = ffi.new('uint8_t[8]')\n  for i = 0, 7 do tmp[7 - i] = string.byte(buf, pos + i) end\n  return tonumber(ffi.cast('double*', tmp)[0])\nend\n\nlocal function unpack_str(buf, pos)\n  local tmp = ffi.new('uint8_t[4]')\n  for i = 0, 3 do tmp[3 - i] = string.byte(buf, pos + i) end\n  local slen = tonumber(ffi.cast('uint32_t*', tmp)[0])\n  return buf:sub(pos + 4, pos + 3 + slen), slen\nend\n";
   let type_defs = types |> list.flat_map((t) => {
     let name = get_str(t, "name");
-    let kind = json.get(t, "kind") ?? json.null();
+    let kind = value.get(t, "kind") ?? value.null();
     match get_kind(kind) {
       "record" => gen_record_ctor(name, get_arr(kind, "fields"), t),
       "variant" => gen_variant_ctors(name, get_arr(kind, "cases"), t),

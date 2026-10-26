@@ -28,21 +28,21 @@ local fn almd_type(ty: Value) -> String = match get_kind(ty) {
   "bool" => "Bool",
   "unit" => "Unit",
   "named" => get_str(ty, "name"),
-  "option" => "Option[${almd_type(json.get(ty, "inner") ?? json.null())}]",
+  "option" => "Option[${almd_type(value.get(ty, "inner") ?? value.null())}]",
   "result" => {
-    let ok_ty = almd_type(json.get(ty, "ok") ?? json.null())
-    let err_ty = almd_type(json.get(ty, "error") ?? json.null())
+    let ok_ty = almd_type(value.get(ty, "ok") ?? value.null())
+    let err_ty = almd_type(value.get(ty, "error") ?? value.null())
     "Result[${ok_ty}, ${err_ty}]"
   },
-  "list" => "List[${almd_type(json.get(ty, "inner") ?? json.null())}]",
+  "list" => "List[${almd_type(value.get(ty, "inner") ?? value.null())}]",
   "tuple" => {
     let fields = get_arr(ty, "fields")
     let inner = fields |> list.map((f) => almd_type(f)) |> list.join(", ")
     "(${inner})"
   },
   "map" => {
-    let key_ty = almd_type(json.get(ty, "key") ?? json.null())
-    let val_ty = almd_type(json.get(ty, "value") ?? json.null())
+    let key_ty = almd_type(value.get(ty, "key") ?? value.null())
+    let val_ty = almd_type(value.get(ty, "value") ?? value.null())
     "Map[${key_ty}, ${val_ty}]"
   },
   _ => "Value",
@@ -53,7 +53,7 @@ local fn almd_type(ty: Value) -> String = match get_kind(ty) {
 local fn gen_record_type(name: String, fields: List[Value], type_def: Value) -> List[String] = {
   let doc = get_str(type_def, "doc")
   let doc_line = if doc != "" then ["/// ${doc}"] else []
-  let field_strs = fields |> list.map((f) => "${get_str(f, "name")}: ${almd_type(json.get(f, "type") ?? json.null())}")
+  let field_strs = fields |> list.map((f) => "${get_str(f, "name")}: ${almd_type(value.get(f, "type") ?? value.null())}")
   let field_body = field_strs |> list.join(", ")
   doc_line + ["type ${name} = { ${field_body} }", ""]
 }
@@ -65,13 +65,13 @@ local fn gen_variant_type(name: String, cases: List[Value], type_def: Value) -> 
   let doc_line = if doc != "" then ["/// ${doc}"] else []
   let case_strs = cases |> list.map((case) => {
     let cname = get_str(case, "name")
-    match json.get(case, "payload") {
+    match value.get(case, "payload") {
       some(pl) => {
         if get_kind(pl) == "tuple" then {
           let tys = get_arr(pl, "fields") |> list.map((f) => almd_type(f)) |> list.join(", ")
           "| ${cname}(${tys})"
         } else if get_kind(pl) == "record" then {
-          let fields = get_arr(pl, "fields") |> list.map((f) => "${get_str(f, "name")}: ${almd_type(json.get(f, "type") ?? json.null())}") |> list.join(", ")
+          let fields = get_arr(pl, "fields") |> list.map((f) => "${get_str(f, "name")}: ${almd_type(value.get(f, "type") ?? value.null())}") |> list.join(", ")
           "| ${cname} { ${fields} }"
         } else "| ${cname}"
       },
@@ -106,7 +106,7 @@ local fn gen_pack_expr(expr: String, ty: Value, types: List[Value]) -> List[Stri
 local fn gen_pack_named(expr: String, ty: Value, types: List[Value]) -> List[String] = {
   let name = get_str(ty, "name")
   if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
+    let fields = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "fields")
     fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types))
   } else if is_variant(name, types) then gen_pack_variant(expr, name, types)
   else [
@@ -115,11 +115,11 @@ local fn gen_pack_named(expr: String, ty: Value, types: List[Value]) -> List[Str
 }
 
 local fn gen_pack_variant(expr: String, name: String, types: List[Value]) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
+  let cases = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "cases")
   let arms = cases |> list.enumerate |> list.map((entry) => {
     let (idx, case) = entry
     let cname = get_str(case, "name")
-    let payload_lines = match json.get(case, "payload") {
+    let payload_lines = match value.get(case, "payload") {
       some(pl) => if get_kind(pl) == "tuple" then {
         let pfields = get_arr(pl, "fields")
         pfields |> list.enumerate |> list.flat_map((pe) => {
@@ -129,7 +129,7 @@ local fn gen_pack_variant(expr: String, name: String, types: List[Value]) -> Lis
       } else [],
       none => [],
     }
-    let pvars = match json.get(case, "payload") {
+    let pvars = match value.get(case, "payload") {
       some(pl) => if get_kind(pl) == "tuple" then {
         let pfields = get_arr(pl, "fields")
         pfields |> list.enumerate |> list.map((pe) => "_pv${int.to_string(pe.0)}")
@@ -180,7 +180,7 @@ local fn gen_unpack_expr(ty: Value, types: List[Value]) -> List[String] = match 
 local fn gen_unpack_named(ty: Value, types: List[Value]) -> List[String] = {
   let name = get_str(ty, "name")
   if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
+    let fields = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "fields")
     let field_unpacks = fields |> list.flat_map((f) => {
       let fname = get_str(f, "name")
       let lines = gen_unpack_expr(get_type(f), types) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
@@ -195,7 +195,7 @@ local fn gen_unpack_named(ty: Value, types: List[Value]) -> List[String] = {
 }
 
 local fn gen_unpack_variant(name: String, types: List[Value]) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
+  let cases = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "cases")
   let tag_line = [
     "let _tag = bytes.read_u32_be(out, pos)",
     "pos = pos + 4"
@@ -203,7 +203,7 @@ local fn gen_unpack_variant(name: String, types: List[Value]) -> List[String] = 
   let arms = cases |> list.enumerate |> list.map((entry) => {
     let (idx, case) = entry
     let cname = get_str(case, "name")
-    match json.get(case, "payload") {
+    match value.get(case, "payload") {
       some(pl) => if get_kind(pl) == "tuple" then {
         let pfields = get_arr(pl, "fields")
         let payload_unpacks = pfields |> list.enumerate |> list.flat_map((pe) => {
@@ -230,16 +230,16 @@ local fn gen_unpack_variant(name: String, types: List[Value]) -> List[String] = 
 local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
   let fname = get_str(f, "name")
   let params = get_arr(f, "params")
-  let ret = json.get(f, "return") ?? json.null()
+  let ret = value.get(f, "return") ?? value.null()
   let doc = get_str(f, "doc")
   let doc_line = if doc != "" then ["/// ${doc}"] else []
   let bridge_name = "bridge_${fname}"
   let extern_name = "raw_bridge_${fname}"
-  let param_strs = params |> list.map((p) => "${get_str(p, "name")}: ${almd_type(json.get(p, "type") ?? json.null())}")
+  let param_strs = params |> list.map((p) => "${get_str(p, "name")}: ${almd_type(value.get(p, "type") ?? value.null())}")
   let param_body = param_strs |> list.join(", ")
   let ret_str = almd_type(ret)
 
-  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types))
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), value.get(p, "type") ?? value.null(), types))
   let unpack_lines = gen_unpack_expr(ret, types)
 
   let bridge_decl = [
@@ -268,7 +268,7 @@ local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List
 // ── Public API ──
 
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
+  let iface = json.parse(iface_json) ?? value.null()
   let module_name = get_str(iface, "module")
   let types = get_arr(iface, "types")
   let functions = get_arr(iface, "functions")
@@ -280,7 +280,7 @@ fn generate(iface_json: String) -> String = {
   ]
   let type_defs = types |> list.flat_map((t) => {
     let name = get_str(t, "name")
-    let kind = json.get(t, "kind") ?? json.null()
+    let kind = value.get(t, "kind") ?? value.null()
     match get_kind(kind) {
       "record" => gen_record_type(name, get_arr(kind, "fields"), t),
       "variant" => gen_variant_type(name, get_arr(kind, "cases"), t),
