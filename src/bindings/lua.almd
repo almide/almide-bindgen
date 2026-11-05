@@ -207,7 +207,6 @@ fn generate(iface_json: String) -> String = {
     let fname = get_str(f, "name");
     "  int bridge_${fname}(const char* args, int args_len, char* out, int out_cap);"
   })) + [
-    "  void* bridge_alloc(int size);",
     "  void bridge_free(void* ptr, int size);",
     "]]",
     ""
