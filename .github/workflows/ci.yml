@@ -27,6 +27,10 @@ jobs:
           key: ${{ runner.os }}-almide-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('almide.lock') }}
           restore-keys: ${{ runner.os }}-almide-${{ env.RUST_TOOLCHAIN }}-
       - name: Install Almide
-        run: cargo install --git https://github.com/almide/almide.git --branch develop
+        run: |
+          curl -fsSL "https://github.com/almide/almide/releases/download/v0.69.0/almide-linux-x86_64.tar.gz" -o almide.tar.gz
+          tar xzf almide.tar.gz --strip-components=1 && sudo mv almide /usr/local/bin/ && almide --version
+      - name: Type check
+        run: almide check
       - name: Run tests
         run: almide test

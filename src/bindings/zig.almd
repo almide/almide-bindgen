@@ -29,8 +29,8 @@ local fn zig_type(ty: Value) -> String = match get_kind(ty) {
   "string" => "[]const u8",
   "bool" => "bool",
   "named" => get_str(ty, "name"),
-  "option" => "?${zig_type(json.get(ty, "inner") ?? json.null())}",
-  "list" => "[]const ${zig_type(json.get(ty, "inner") ?? json.null())}",
+  "option" => "?${zig_type(value.get(ty, "inner") ?? value.null())}",
+  "list" => "[]const ${zig_type(value.get(ty, "inner") ?? value.null())}",
   _ => "void",
 }
 
@@ -56,7 +56,7 @@ local fn gen_pack_expr(expr: String, ty: Value, types: List[Value], indent: Stri
 local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: String) -> List[String] = {
   let name = get_str(ty, "name");
   if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    let fields = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "fields");
     fields |> list.flat_map((f) => gen_pack_expr("${expr}.${get_str(f, "name")}", get_type(f), types, indent))
   } else if is_variant(name, types) then gen_pack_variant(expr, name, types, indent)
   else [
@@ -66,11 +66,11 @@ local fn gen_pack_named(expr: String, ty: Value, types: List[Value], indent: Str
 
 // ── Unpack code generation ──
 local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent: String) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases");
+  let cases = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "cases");
   let case_lines = cases |> list.enumerate |> list.flat_map((entry) => {
     let (tag_idx, case) = entry;
     let cname = get_str(case, "name");
-    match json.get(case, "payload") {
+    match value.get(case, "payload") {
       some(pl) => {
         if get_kind(pl) == "tuple" then {
           let pfields = get_arr(pl, "fields");
@@ -78,7 +78,7 @@ local fn gen_pack_variant(expr: String, name: String, types: List[Value], indent
           if n == 1 then [
             "${indent}    .${cname.to_lower()} => |pv| {",
             "${indent}        packU32(&buf, &pos, ${int.to_string(tag_idx)});"
-          ] + gen_pack_expr("pv", list.get(pfields, 0) ?? json.null(), types, indent + "        ") + [
+          ] + gen_pack_expr("pv", list.get(pfields, 0) ?? value.null(), types, indent + "        ") + [
             "${indent}    },"
           ]
           else [
@@ -134,7 +134,7 @@ local fn gen_unpack_expr(ty: Value, types: List[Value], indent: String) -> List[
 local fn gen_unpack_named(ty: Value, types: List[Value], indent: String) -> List[String] = {
   let name = get_str(ty, "name");
   if is_record(name, types) then {
-    let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields");
+    let fields = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "fields");
     let unpack_lines = fields |> list.flat_map((f) => {
       let fname = get_str(f, "name");
       gen_unpack_expr(get_type(f), types, indent) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
@@ -170,13 +170,13 @@ local fn gen_variant_union(name: String, cases: List[Value], type_def: Value) ->
   else [];
   let case_lines = cases |> list.flat_map((case) => {
     let cname = get_str(case, "name");
-    match json.get(case, "payload") {
+    match value.get(case, "payload") {
       some(pl) => {
         if get_kind(pl) == "tuple" then {
           let pfields = get_arr(pl, "fields");
           match list.len(pfields) {
             1 => [
-              "    ${cname.to_lower()}: ${zig_type(list.get(pfields, 0) ?? json.null())},"
+              "    ${cname.to_lower()}: ${zig_type(list.get(pfields, 0) ?? value.null())},"
             ],
             _ => {
               let ptypes = pfields.map((pf) => zig_type(pf)).join(", ");
@@ -203,14 +203,14 @@ local fn gen_variant_union(name: String, cases: List[Value], type_def: Value) ->
 local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List[String] = {
   let fname = get_str(f, "name");
   let params = get_arr(f, "params");
-  let ret = json.get(f, "return") ?? json.null();
+  let ret = value.get(f, "return") ?? value.null();
   let doc = get_str(f, "doc");
-  let zig_params = params.map((p) => "${get_str(p, "name")}: ${zig_type(json.get(p, "type") ?? json.null())}").join(", ");
+  let zig_params = params.map((p) => "${get_str(p, "name")}: ${zig_type(value.get(p, "type") ?? value.null())}").join(", ");
   let doc_line = if doc != "" then [
     "/// ${doc}"
   ]
   else [];
-  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), json.get(p, "type") ?? json.null(), types, "    "));
+  let pack_lines = params |> list.flat_map((p) => gen_pack_expr(get_str(p, "name"), value.get(p, "type") ?? value.null(), types, "    "));
   let unpack_lines = gen_unpack_expr(ret, types, "    ");
   doc_line + [
     "pub fn ${fname}(${zig_params}) ${zig_type(ret)} {",
@@ -224,7 +224,7 @@ local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List
 }
 
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null();
+  let iface = json.parse(iface_json) ?? value.null();
   let module_name = get_str(iface, "module");
   let types = get_arr(iface, "types");
   let functions = get_arr(iface, "functions");
@@ -236,7 +236,7 @@ fn generate(iface_json: String) -> String = {
   let helper_fns = "fn packI64(buf: *[4096]u8, pos: *usize, v: i64) void {\n    std.mem.writeInt(i64, buf[pos.*..][0..8], v, .big);\n    pos.* += 8;\n}\nfn packF64(buf: *[4096]u8, pos: *usize, v: f64) void {\n    std.mem.writeInt(u64, buf[pos.*..][0..8], @bitCast(v), .big);\n    pos.* += 8;\n}\nfn packU32(buf: *[4096]u8, pos: *usize, v: u32) void {\n    std.mem.writeInt(u32, buf[pos.*..][0..4], v, .big);\n    pos.* += 4;\n}\nfn packStr(buf: *[4096]u8, pos: *usize, s: []const u8) void {\n    packU32(buf, pos, @intCast(s.len));\n    @memcpy(buf[pos.*..][0..s.len], s);\n    pos.* += s.len;\n}\nfn unpackI64(buf: [*]const u8, pos: *usize) i64 {\n    const v = std.mem.readInt(i64, buf[pos.*..][0..8], .big);\n    pos.* += 8; return v;\n}\nfn unpackF64(buf: [*]const u8, pos: *usize) f64 {\n    const bits = std.mem.readInt(u64, buf[pos.*..][0..8], .big);\n    pos.* += 8; return @bitCast(bits);\n}\nfn unpackStr(buf: [*]const u8, pos: *usize) []const u8 {\n    const len: usize = @intCast(std.mem.readInt(u32, buf[pos.*..][0..4], .big));\n    pos.* += 4;\n    const s = buf[pos.*..][0..len];\n    pos.* += len; return s;\n}";
   let type_defs = types |> list.flat_map((t) => {
     let name = get_str(t, "name");
-    let kind = json.get(t, "kind") ?? json.null();
+    let kind = value.get(t, "kind") ?? value.null();
     match get_kind(kind) {
       "record" => gen_record_struct(name, get_arr(kind, "fields"), t),
       "variant" => gen_variant_union(name, get_arr(kind, "cases"), t),

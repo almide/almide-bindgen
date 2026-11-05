@@ -12,20 +12,20 @@ import json
 
 // ── Shared helpers ──
 
-fn get_str(v: Value, key: String) -> String = json.as_string(json.get(v, key) ?? json.from_string("")) ?? ""
+fn get_str(v: Value, key: String) -> String = value.as_string(value.get(v, key) ?? value.string(""))? ?? ""
 
-fn get_arr(v: Value, key: String) -> List[Value] = json.as_array(json.get(v, key) ?? json.array([])) ?? []
+fn get_arr(v: Value, key: String) -> List[Value] = value.as_array(value.get(v, key) ?? value.array([]))? ?? []
 
 fn get_kind(v: Value) -> String = get_str(v, "kind")
 
-fn get_type(v: Value) -> Value = json.get(v, "type") ?? json.null()
+fn get_type(v: Value) -> Value = value.get(v, "type") ?? value.null()
 
-fn find_type_def(name: String, types: List[Value]) -> Value = types |> list.find((t) => get_str(t, "name") == name) ?? json.null()
+fn find_type_def(name: String, types: List[Value]) -> Value = types |> list.find((t) => get_str(t, "name") == name) ?? value.null()
 
-fn is_record(name: String, types: List[Value]) -> Bool = get_kind(json.get(find_type_def(name, types), "kind") ?? json.null()) == "record"
+fn is_record(name: String, types: List[Value]) -> Bool = get_kind(value.get(find_type_def(name, types), "kind") ?? value.null()) == "record"
 
 // ── Public API ──
-fn is_variant(name: String, types: List[Value]) -> Bool = get_kind(json.get(find_type_def(name, types), "kind") ?? json.null()) == "variant"
+fn is_variant(name: String, types: List[Value]) -> Bool = get_kind(value.get(find_type_def(name, types), "kind") ?? value.null()) == "variant"
 
 fn version() -> String = "0.1.0"
 

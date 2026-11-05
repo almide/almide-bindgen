@@ -53,7 +53,7 @@ fn gen_unpack(ty: Value, types: List[Value]) -> List[String] = match get_kind(ty
 }
 
 local fn gen_unpack_record(name: String, types: List[Value]) -> List[String] = {
-  let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
+  let fields = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "fields")
   let field_unpacks = fields |> list.flat_map((f) => {
     let fname = get_str(f, "name")
     gen_unpack(get_type(f), types) |> list.map((l) => string.replace(l, "_v", "_f_${fname}"))
@@ -63,11 +63,11 @@ local fn gen_unpack_record(name: String, types: List[Value]) -> List[String] = {
 }
 
 local fn gen_unpack_variant(name: String, types: List[Value]) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
+  let cases = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "cases")
   let arms = cases |> list.enumerate |> list.map((entry) => {
     let (idx, case) = entry
     let cname = get_str(case, "name")
-    match json.get(case, "payload") {
+    match value.get(case, "payload") {
       some(pl) => if get_kind(pl) == "tuple" then {
         let pfields = get_arr(pl, "fields")
         let payload_unpacks = pfields |> list.enumerate |> list.flat_map((pe) => {
@@ -108,16 +108,16 @@ fn gen_pack(expr: String, ty: Value, types: List[Value]) -> List[String] = match
 }
 
 local fn gen_pack_record(expr: String, name: String, types: List[Value]) -> List[String] = {
-  let fields = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "fields")
+  let fields = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "fields")
   fields |> list.flat_map((f) => gen_pack("${expr}.${get_str(f, "name")}", get_type(f), types))
 }
 
 local fn gen_pack_variant(expr: String, name: String, types: List[Value]) -> List[String] = {
-  let cases = get_arr(json.get(find_type_def(name, types), "kind") ?? json.null(), "cases")
+  let cases = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "cases")
   let arms = cases |> list.enumerate |> list.map((entry) => {
     let (idx, case) = entry
     let cname = get_str(case, "name")
-    let payload_lines = match json.get(case, "payload") {
+    let payload_lines = match value.get(case, "payload") {
       some(pl) => if get_kind(pl) == "tuple" then {
         let pfields = get_arr(pl, "fields")
         pfields |> list.enumerate |> list.flat_map((pe) => {
@@ -127,7 +127,7 @@ local fn gen_pack_variant(expr: String, name: String, types: List[Value]) -> Lis
       } else [],
       none => [],
     }
-    let pvars = match json.get(case, "payload") {
+    let pvars = match value.get(case, "payload") {
       some(pl) => if get_kind(pl) == "tuple" then {
         get_arr(pl, "fields") |> list.enumerate |> list.map((pe) => "_pv${int.to_string(pe.0)}")
       } else [],
@@ -146,11 +146,11 @@ local fn gen_pack_variant(expr: String, name: String, types: List[Value]) -> Lis
 fn gen_scaffold_fn(f: Value, types: List[Value]) -> List[String] = {
   let fname = get_str(f, "name")
   let params = get_arr(f, "params")
-  let ret = json.get(f, "return") ?? json.null()
+  let ret = value.get(f, "return") ?? value.null()
 
   let unpack_lines = params |> list.flat_map((p) => {
     let pname = get_str(p, "name")
-    gen_unpack(json.get(p, "type") ?? json.null(), types) |> list.map((l) => string.replace(l, "_v", "_p_${pname}"))
+    gen_unpack(value.get(p, "type") ?? value.null(), types) |> list.map((l) => string.replace(l, "_v", "_p_${pname}"))
   })
   let call_args = params |> list.map((p) => "_p_${get_str(p, "name")}") |> list.join(", ")
   let pack_lines = gen_pack("_result", ret, types)
@@ -184,7 +184,7 @@ fn gen_bridge_helpers() -> List[String] = [
 // ── Public API ──
 
 fn generate(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
+  let iface = json.parse(iface_json) ?? value.null()
   let types = get_arr(iface, "types")
   let functions = get_arr(iface, "functions")
   let header = [
@@ -203,7 +203,7 @@ fn generate(iface_json: String) -> String = {
 }
 
 fn generate_cargo(iface_json: String) -> String = {
-  let iface = json.parse(iface_json) ?? json.null()
+  let iface = json.parse(iface_json) ?? value.null()
   let module_name = get_str(iface, "module")
   "[package]\nname = \"almide-${module_name}-bridge\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\"]\nname = \"almide_${module_name}\""
 }
