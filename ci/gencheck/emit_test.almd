@@ -1,0 +1,32 @@
+// Driver for the generated-code gate (ci/gencheck/run.sh). It is a test so it
+// runs on the same host `almide test` uses; run.sh calls it once per fixture.
+//
+// Reads  target/gencheck/<fixture>/iface.json  (from `almide compile --json`)
+// Writes target/gencheck/<fixture>/consumer/main.almd  bindings.almide.generate
+//        target/gencheck/<fixture>/bridge/main.almd    scaffolding.generate,
+//          assembled with the library source the way almide-lander does
+//
+// The fixture name comes from target/gencheck/current. Without that file (a
+// plain `almide test`) there is nothing to emit and the test passes; run.sh
+// fails on its own when an expected output is missing.
+import fs
+import self.scaffolding as scaffolding
+import self.bindings.almide as almide_bind
+
+effect fn emit(name: String) -> Unit = {
+  let dir = "target/gencheck/${name}"
+  let iface_json = fs.read_text("${dir}/iface.json")!
+  let source_lines = string.lines(fs.read_text("ci/gencheck/${name}.almd")!)
+  let import_lines = source_lines |> list.filter((l) => string.starts_with(l, "import "))
+  let body_lines = source_lines |> list.filter((l) => not string.starts_with(l, "import "))
+  let bridge = (import_lines |> list.join("\n")) + "\n" + scaffolding.generate(iface_json) + "\n" + (body_lines |> list.join("\n"))
+  fs.mkdir_p("${dir}/consumer")!
+  fs.mkdir_p("${dir}/bridge")!
+  fs.write_text("${dir}/consumer/main.almd", almide_bind.generate(iface_json))!
+  fs.write_text("${dir}/bridge/main.almd", bridge)!
+}
+
+test "emit the generated Almide sources for the current gencheck fixture" {
+  let name = string.trim(fs.read_text("target/gencheck/current") ?? "")
+  if name != "" then emit(name)! else ()
+}
