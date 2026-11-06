@@ -7,19 +7,23 @@
 set -euxo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# The driver runs on the embedded wasm host (no native build), which sees
+# only the working directory, so the scratch projects live under target/.
+cd "$root"
+work="target/gencheck"
+rm -rf "$work"
 almide --version
 
 fail=0
 for lib in "$root"/ci/gencheck/*.almd; do
   name="$(basename "$lib" .almd)"
+  lib="ci/gencheck/$name.almd"
   [ "$name" = main ] && continue
   out="$work/$name"
   mkdir -p "$out"
   almide check "$lib"
   almide compile "$lib" --json > "$out/iface.json"
-  (cd "$root" && timeout 600 almide run ci/gencheck/main.almd -- "$lib" "$out/iface.json" "$out" </dev/null)
+  timeout 300 almide run --target wasm -v ci/gencheck/main.almd -- "$lib" "$out/iface.json" "$out" </dev/null
   for kind in consumer bridge; do
     printf '[package]\nname = "gencheck_%s_%s"\nversion = "0.0.0"\n' "$name" "$kind" > "$out/$kind/almide.toml"
     echo "── $name / $kind ──"
