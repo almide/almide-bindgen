@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  RUST_TOOLCHAIN: "1.89.0"
+  RUST_TOOLCHAIN: "1.97.0"  # almide v0.69.0 refuses native builds (the gate's `almide run`) below 1.97
 
 jobs:
   test:
