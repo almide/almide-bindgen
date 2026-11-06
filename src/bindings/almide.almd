@@ -86,7 +86,7 @@ local fn gen_variant_type(name: String, cases: List[Value], type_def: Value) -> 
 
 local fn gen_pack_expr(expr: String, ty: Value, types: List[Value]) -> List[String] = match get_kind(ty) {
   "int" => [
-    "bytes.append_i64_be(buf, ${expr})"
+    "bytes.write_i64_be(buf, ${expr})"
   ],
   "float" => [
     "bytes.append_f64_be(buf, ${expr})"
