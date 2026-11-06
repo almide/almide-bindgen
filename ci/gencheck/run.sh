@@ -4,7 +4,7 @@
 # and `almide check` it with the pinned compiler. bindgen's own `almide check`
 # only sees the templates as string literals, so a removed spelling inside a
 # template passes there and fails first in a consumer; this gate fails here.
-set -euo pipefail
+set -euxo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d)"
@@ -19,7 +19,7 @@ for lib in "$root"/ci/gencheck/*.almd; do
   mkdir -p "$out"
   almide check "$lib"
   almide compile "$lib" --json > "$out/iface.json"
-  (cd "$root" && almide run ci/gencheck/main.almd -- "$lib" "$out/iface.json" "$out")
+  (cd "$root" && timeout 600 almide run ci/gencheck/main.almd -- "$lib" "$out/iface.json" "$out" </dev/null)
   for kind in consumer bridge; do
     printf '[package]\nname = "gencheck_%s_%s"\nversion = "0.0.0"\n' "$name" "$kind" > "$out/$kind/almide.toml"
     echo "── $name / $kind ──"
