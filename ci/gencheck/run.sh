@@ -13,13 +13,6 @@ cd "$root"
 work="target/gencheck"
 rm -rf "$work"
 almide --version
-# DEBUG bisect
-mkdir -p target/dbg
-printf 'effect fn main() -> Unit = println("hi")\n' > target/dbg/hello.almd
-timeout 120 almide run --target wasm target/dbg/hello.almd </dev/null || echo "hello wasm rc=$?"
-timeout 120 almide run target/dbg/hello.almd </dev/null || echo "hello native rc=$?"
-timeout 120 almide build --target wasm ci/gencheck/main.almd -o target/dbg/drv.wasm </dev/null || echo "build drv rc=$?"
-ls -la target/dbg
 
 fail=0
 for lib in "$root"/ci/gencheck/*.almd; do
@@ -30,7 +23,7 @@ for lib in "$root"/ci/gencheck/*.almd; do
   mkdir -p "$out"
   almide check "$lib"
   almide compile "$lib" --json > "$out/iface.json"
-  timeout 300 almide run --target wasm -v ci/gencheck/main.almd -- "$lib" "$out/iface.json" "$out" </dev/null
+  timeout 120 almide run --target wasm -v ci/gencheck/main.almd -- "$lib" "$out/iface.json" "$out" </dev/null
   for kind in consumer bridge; do
     printf '[package]\nname = "gencheck_%s_%s"\nversion = "0.0.0"\n' "$name" "$kind" > "$out/$kind/almide.toml"
     echo "── $name / $kind ──"

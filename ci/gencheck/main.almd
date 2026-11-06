@@ -13,17 +13,23 @@ import self.bindings.almide as almide_bind
 
 effect fn main() -> Unit = {
   let args = env.args()
+  println("args: ${args |> list.join(" | ")}")
   let n = list.len(args)
   let lib_path = list.get(args, n - 3) ?? ""
   let iface_path = list.get(args, n - 2) ?? ""
   let outdir = list.get(args, n - 1) ?? ""
   let iface_json = fs.read_text(iface_path)!
+  println("read iface ${int.to_string(string.len(iface_json))}")
   let source_lines = string.lines(fs.read_text(lib_path)!)
   let import_lines = source_lines |> list.filter((l) => string.starts_with(l, "import "))
   let body_lines = source_lines |> list.filter((l) => not string.starts_with(l, "import "))
+  println("read lib")
+  let consumer = almide_bind.generate(iface_json)
+  println("consumer done")
   let bridge = (import_lines |> list.join("\n")) + "\n" + scaffolding.generate(iface_json) + "\n" + (body_lines |> list.join("\n"))
+  println("bridge done")
   fs.mkdir_p("${outdir}/consumer")!
   fs.mkdir_p("${outdir}/bridge")!
-  fs.write_text("${outdir}/consumer/main.almd", almide_bind.generate(iface_json))!
+  fs.write_text("${outdir}/consumer/main.almd", consumer)!
   fs.write_text("${outdir}/bridge/main.almd", bridge)!
 }
