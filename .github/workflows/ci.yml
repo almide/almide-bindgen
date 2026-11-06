@@ -34,3 +34,6 @@ jobs:
         run: almide check
       - name: Run tests
         run: almide test
+      - name: Check generated code
+        timeout-minutes: 15
+        run: bash ci/gencheck/run.sh

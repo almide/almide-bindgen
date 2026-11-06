@@ -86,16 +86,16 @@ local fn gen_variant_type(name: String, cases: List[Value], type_def: Value) -> 
 
 local fn gen_pack_expr(expr: String, ty: Value, types: List[Value]) -> List[String] = match get_kind(ty) {
   "int" => [
-    "bytes.write_i64_be(buf, ${expr})"
+    "bytes.append_i64_be(buf, ${expr})"
   ],
   "float" => [
-    "bytes.write_f64_be(buf, ${expr})"
+    "bytes.append_f64_be(buf, ${expr})"
   ],
   "bool" => [
-    "bytes.write_bool(buf, ${expr})"
+    "bytes.append_bool(buf, ${expr})"
   ],
   "string" => [
-    "bytes.write_string_be(buf, ${expr})"
+    "bridge_put_string(buf, ${expr})"
   ],
   "named" => gen_pack_named(expr, ty, types),
   _ => [
@@ -138,7 +138,7 @@ local fn gen_pack_variant(expr: String, name: String, types: List[Value]) -> Lis
     }
     let pattern = if list.is_empty(pvars) then cname
                   else "${cname}(${pvars |> list.join(", ")})"
-    let body = ["bytes.write_u32_be(buf, ${int.to_string(idx)})"] + payload_lines
+    let body = ["bytes.append_u32_be(buf, ${int.to_string(idx)})"] + payload_lines
     "    ${pattern} => {\n${body |> list.map((l) => "      " + l) |> list.join("\n")}\n    }"
   })
   [
@@ -152,20 +152,20 @@ local fn gen_pack_variant(expr: String, name: String, types: List[Value]) -> Lis
 
 local fn gen_unpack_expr(ty: Value, types: List[Value]) -> List[String] = match get_kind(ty) {
   "int" => [
-    "let _v = bytes.read_i64_be(out, pos)",
+    "let _v = bytes.get_i64_be(out, pos) ?? 0",
     "pos = pos + 8"
   ],
   "float" => [
-    "let _v = bytes.read_f64_be(out, pos)",
+    "let _v = bytes.get_f64_be(out, pos) ?? 0.0",
     "pos = pos + 8"
   ],
   "bool" => [
-    "let _v = bytes.read_bool(out, pos)",
+    "let _v = bytes.get_bool(out, pos) ?? false",
     "pos = pos + 1"
   ],
   "string" => [
-    "let _slen = bytes.read_u32_be(out, pos)",
-    "let _v = bytes.read_string_be(out, pos)",
+    "let _slen = bytes.get_u32_be(out, pos) ?? 0",
+    "let _v = bytes.to_string_lossy(bytes.slice(out, pos + 4, pos + 4 + _slen))",
     "pos = pos + 4 + _slen"
   ],
   "named" => gen_unpack_named(ty, types),
@@ -197,7 +197,7 @@ local fn gen_unpack_named(ty: Value, types: List[Value]) -> List[String] = {
 local fn gen_unpack_variant(name: String, types: List[Value]) -> List[String] = {
   let cases = get_arr(value.get(find_type_def(name, types), "kind") ?? value.null(), "cases")
   let tag_line = [
-    "let _tag = bytes.read_u32_be(out, pos)",
+    "let _tag = bytes.get_u32_be(out, pos) ?? 0",
     "pos = pos + 4"
   ]
   let arms = cases |> list.enumerate |> list.map((entry) => {
@@ -256,7 +256,7 @@ local fn gen_function(f: Value, module_name: String, types: List[Value]) -> List
   let wrapper = doc_line + [
     "effect fn ${fname}(${param_body}) -> ${ret_str} = {"
   ] + [
-    "  var buf = bytes.new(0)"
+    "  var buf = bytes.new()"
   ] + (pack_lines |> list.map((l) => "  " + l)) + [
     "  let out_r = ffi.alloc(4096)!",
     "  let _rlen = ${extern_name}(ffi.region(buf), out_r)",
@@ -283,6 +283,12 @@ fn generate(iface_json: String) -> String = {
     "// Do not edit manually.",
     "import bytes",
     "import ffi",
+    "",
+    "local fn bridge_put_string(mut out: Bytes, s: String) -> Unit = {",
+    "  let sb = bytes.from_string(s)",
+    "  bytes.append_u32_be(out, bytes.len(sb))",
+    "  bytes.append_bytes(out, sb)",
+    "}",
     ""
   ]
   let type_defs = types |> list.flat_map((t) => {
