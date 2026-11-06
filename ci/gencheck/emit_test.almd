@@ -10,6 +10,8 @@
 // plain `almide test`) there is nothing to emit and the test passes; run.sh
 // fails on its own when an expected output is missing.
 import fs
+import json
+import self as bindgen
 import self.scaffolding as scaffolding
 import self.bindings.almide as almide_bind
 
