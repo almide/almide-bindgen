@@ -8,6 +8,7 @@
 //                                  library source the way almide-lander does
 import env
 import fs
+import json
 import self.scaffolding as scaffolding
 import self.bindings.almide as almide_bind
 
@@ -24,6 +25,19 @@ effect fn main() -> Unit = {
   let import_lines = source_lines |> list.filter((l) => string.starts_with(l, "import "))
   let body_lines = source_lines |> list.filter((l) => not string.starts_with(l, "import "))
   println("read lib")
+  let probe_bridge = scaffolding.generate(iface_json)
+  println("bridge first ok ${int.to_string(string.len(probe_bridge))}")
+  let iface = json.parse(iface_json) ?? value.null()
+  let types = value.get(iface, "types") ?? value.array([])
+  let fns = value.as_array(value.get(iface, "functions") ?? value.array([])) ?? []
+  println("types only")
+  let t0 = almide_bind.generate(json.stringify(value.object([("module", value.string("m")), ("types", types), ("functions", value.array([]))])))
+  println("types only ok ${int.to_string(string.len(t0))}")
+  for f in fns {
+    println("fn ${json.stringify(value.get(f, "name") ?? value.null())}")
+    let one = almide_bind.generate(json.stringify(value.object([("module", value.string("m")), ("types", types), ("functions", value.array([f]))])))
+    println("  ok ${int.to_string(string.len(one))}")
+  }
   let consumer = almide_bind.generate(iface_json)
   println("consumer done")
   let bridge = (import_lines |> list.join("\n")) + "\n" + scaffolding.generate(iface_json) + "\n" + (body_lines |> list.join("\n"))
