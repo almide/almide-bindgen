@@ -34,6 +34,8 @@ jobs:
         run: almide check
       - name: Run tests
         run: almide test
+      - name: Bisect (temporary)
+        run: bash ci/gencheck/bisect.sh
       - name: Check generated code
         timeout-minutes: 15
         run: bash ci/gencheck/run.sh
