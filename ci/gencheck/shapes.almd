@@ -1,0 +1,33 @@
+// Fixture library for the generated-code gate (ci/gencheck/run.sh).
+// One function per input shape the Almide-emitting generators handle:
+// Int, Float, Bool, String, a record, and a variant with tuple and
+// payload-less cases, as parameters and as results.
+
+/// A point in the plane
+type Point = { x: Int, y: Float }
+
+/// A shape
+type Shape =
+  | Circle(Float)
+  | Rect(Int, Int)
+  | Empty
+
+fn add(a: Int, b: Int) -> Int = a + b
+
+fn scale(x: Float, k: Float) -> Float = x * k
+
+fn flip(b: Bool) -> Bool = not b
+
+fn greet(name: String) -> String = "hello ${name}"
+
+fn origin() -> Point = { x: 0, y: 0.0 }
+
+fn shift(p: Point, dx: Int) -> Point = { x: p.x + dx, y: p.y }
+
+fn area(s: Shape) -> Float = match s {
+  Circle(r) => r * r,
+  Rect(w, h) => float.from(w * h),
+  Empty => 0.0,
+}
+
+fn unit_square() -> Shape = Rect(1, 1)
